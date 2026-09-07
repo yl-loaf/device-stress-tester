@@ -12,7 +12,7 @@
   <meta http-equiv="Expires" content="0" />
   <title>Phone Stress Tester</title>
   <!-- Bump ?v= when you deploy so browsers fetch fresh assets -->
-  <link rel="stylesheet" href="styles.css?v=14" />
+  <link rel="stylesheet" href="styles.css?v=17" />
 </head>
 <body>
   <div class="app">
@@ -21,7 +21,7 @@
         <h1>Phone Stress Tester</h1>
         <button type="button" id="themeToggle" class="theme-btn" aria-label="Toggle light mode">Light</button>
       </div>
-      <p class="subtitle">Battery &amp; hardware stress tools <span id="buildTag" class="build-tag">v14</span></p>
+      <p class="subtitle">Battery &amp; hardware stress tools <span id="buildTag" class="build-tag">v17</span></p>
     </header>
 
     <section class="card power-card">
@@ -224,6 +224,85 @@
       <p class="status" id="toneStatus">Off</p>
     </section>
 
+    <!-- NFC -->
+    <section class="card">
+      <div class="card-header">
+        <h2>NFC detector</h2>
+        <label class="switch">
+          <input type="checkbox" id="nfcToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="status" id="nfcStatus">Off</p>
+      <p class="hint">Web NFC (NDEF). Works mainly on Android Chrome over HTTPS. Hold a tag near the phone while scanning.</p>
+    </section>
+
+    <!-- RAM stress -->
+    <section class="card">
+      <div class="card-header">
+        <h2>RAM stress</h2>
+        <label class="switch">
+          <input type="checkbox" id="ramToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="controls">
+        <label>
+          Max load <span id="ramMaxValue">80</span>%
+          <input type="range" id="ramMaxSlider" min="50" max="95" value="80" step="1" />
+        </label>
+      </div>
+      <p class="status" id="ramStatus">Off</p>
+      <p class="hint">Allocates until held memory reaches the chosen % of an estimated safe ceiling (JS heap limit or device RAM). Stops before a hard OOM to reduce freezes.</p>
+    </section>
+
+    <!-- Motion sensors -->
+    <section class="card">
+      <div class="card-header">
+        <h2>Motion sensors</h2>
+        <label class="switch">
+          <input type="checkbox" id="sensorsToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="sensor-grid">
+        <div class="sensor-block">
+          <h3>Accelerometer</h3>
+          <p class="sensor-line">x <span id="accX">—</span></p>
+          <p class="sensor-line">y <span id="accY">—</span></p>
+          <p class="sensor-line">z <span id="accZ">—</span></p>
+        </div>
+        <div class="sensor-block">
+          <h3>Gyroscope</h3>
+          <p class="sensor-line">α <span id="gyroA">—</span></p>
+          <p class="sensor-line">β <span id="gyroB">—</span></p>
+          <p class="sensor-line">γ <span id="gyroG">—</span></p>
+        </div>
+        <div class="sensor-block">
+          <h3>Compass / orient.</h3>
+          <p class="sensor-line">α <span id="oriA">—</span></p>
+          <p class="sensor-line">β <span id="oriB">—</span></p>
+          <p class="sensor-line">γ <span id="oriG">—</span></p>
+          <p class="sensor-line">compass <span id="oriCompass">—</span></p>
+        </div>
+      </div>
+      <p class="status" id="sensorsStatus">Off</p>
+      <p class="hint">DeviceMotion + DeviceOrientation at the highest rate the browser allows. iOS may require a permission prompt.</p>
+    </section>
+
+    <!-- Close when unfocused -->
+    <section class="card">
+      <div class="card-header">
+        <h2>Close tab when unfocused</h2>
+        <label class="switch">
+          <input type="checkbox" id="blurCloseToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="status" id="blurCloseStatus">Off</p>
+      <p class="hint">When enabled, switching away from this tab/app attempts to close the tab. Browsers may block true close and open a blank page instead.</p>
+    </section>
+
     <!-- Eclipse Void — blank screen -->
     <section class="card">
       <div class="card-header">
@@ -234,7 +313,7 @@
         </label>
       </div>
       <p class="status" id="voidStatus">Off</p>
-      <p class="hint">Full-screen blank (black in dark mode, white in light). Tap 5× quickly to force-close the tab. ✕ exits this mode only. Press counter resets after 3s idle.</p>
+      <p class="hint">Full-screen blank (black in dark mode, white in light). Remaining taps shown on screen. Tap 5× to close tab. ✕ exits mode only. Counter resets after 3s idle.</p>
     </section>
 
     <footer>
@@ -246,8 +325,9 @@
   <!-- Full-screen overlay for Eclipse Void -->
   <div id="voidOverlay" class="void-overlay" hidden>
     <button type="button" id="voidCloseBtn" class="void-close" aria-label="Exit Eclipse Void">×</button>
+    <p id="voidTapHint" class="void-tap-hint">5 taps left to close tab</p>
   </div>
 
-  <script src="app.js?v=14"></script>
+  <script src="app.js?v=17"></script>
 </body>
 </html>
