@@ -14,6 +14,9 @@
     gpu: 3.5,        // heavy GPU (canvas or WebGL volume)
     mic: 0.5,        // mic + DSP
     tone: 0.4,       // speaker / audio amp
+    nfc: 0.2,
+    ram: 1.0,
+    sensors: 0.3,
   };
 
   const active = {
@@ -26,6 +29,9 @@
     gpu: false,
     mic: false,
     tone: false,
+    nfc: false,
+    ram: false,
+    sensors: false,
   };
 
   let cpuWorkerCount = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4));
@@ -1054,7 +1060,7 @@
       float t = 0.0;
       float d = 1.0;
       int hit = 0;
-      for (int i = 0; i < 1536; i++) {
+      for (int i = 0; i < 2048; i++) {
         if (float(i) >= u_steps) break;
         vec3 p = ro + rd * t;
         d = map(p);
@@ -1100,8 +1106,11 @@
 
     // scale: 0.45 → 2.0 at 100%, up to ~3.2 past 100%
     webglScale = 0.45 + t * 1.55 + over * 0.012;
-    // ray steps ×1.5: ~72 → 720 at 100%, up to ~1350 past 100%
-    webglSteps = Math.round((48 + t * 432 + over * 4.2) * 1.5);
+    // ray steps ×1.5, capped at 2000 (~720 at 100%, ~2000 at max over-load)
+    webglSteps = Math.min(
+      2000,
+      Math.round((48 + t * 432 + over * 8.5) * 1.5)
+    );
     // passes: 1 → 6 at 100%, up to 16 past 100%
     webglPasses = Math.max(1, Math.round(1 + t * 5 + over * 0.1));
 
@@ -1532,6 +1541,313 @@
     }
   });
 
+  // ---------- NFC detector (Web NFC / NDEFReader) ----------
+  let nfcReader = null;
+  let nfcAbort = null;
+
+  async function setNfc(on) {
+    const status = document.getElementById("nfcStatus");
+    if (on) {
+      if (typeof NDEFReader === "undefined") {
+        status.textContent = "Web NFC not supported (need Android Chrome + HTTPS)";
+        status.className = "status warn";
+        document.getElementById("nfcToggle").checked = false;
+        return;
+      }
+      try {
+        nfcAbort = new AbortController();
+        nfcReader = new NDEFReader();
+        await nfcReader.scan({ signal: nfcAbort.signal });
+        active.nfc = true;
+        updatePower();
+        status.textContent = "Scanning — hold a tag near the phone…";
+        status.className = "status on";
+
+        nfcReader.addEventListener("reading", (event) => {
+          if (!active.nfc) return;
+          const records = event.message?.records || [];
+          const parts = records.map((r) => {
+            try {
+              if (r.recordType === "text") {
+                const dec = new TextDecoder(r.encoding || "utf-8");
+                return "text: " + dec.decode(r.data);
+              }
+              if (r.recordType === "url") {
+                return "url: " + new TextDecoder().decode(r.data);
+              }
+              return r.recordType + " (" + (r.data?.byteLength || 0) + " B)";
+            } catch (_) {
+              return r.recordType || "record";
+            }
+          });
+          status.textContent =
+            "Tag" + (event.serialNumber ? " " + event.serialNumber : "") +
+            " — " + (parts.length ? parts.join(" · ") : "empty NDEF");
+          status.className = "status on";
+        });
+
+        nfcReader.addEventListener("readingerror", () => {
+          if (!active.nfc) return;
+          status.textContent = "Read error — try again";
+          status.className = "status warn";
+        });
+      } catch (err) {
+        active.nfc = false;
+        updatePower();
+        status.textContent = "Error: " + (err.message || err.name);
+        status.className = "status warn";
+        document.getElementById("nfcToggle").checked = false;
+      }
+    } else {
+      active.nfc = false;
+      if (nfcAbort) {
+        try { nfcAbort.abort(); } catch (_) {}
+        nfcAbort = null;
+      }
+      nfcReader = null;
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("nfcToggle").addEventListener("change", (e) => {
+    setNfc(e.target.checked);
+  });
+
+  // ---------- RAM stress (allocate up to slider % of safe ceiling) ----------
+  let ramChunks = [];
+  let ramBytes = 0;
+  let ramTimer = null;
+  let ramCeilingBytes = 0;
+
+  function formatRam(bytes) {
+    if (bytes >= 1e9) return (bytes / 1e9).toFixed(2) + " GB";
+    if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + " MB";
+    return (bytes / 1e3).toFixed(0) + " KB";
+  }
+
+  /** Estimate how much JS can hold before the tab is likely to die */
+  function estimateRamCeiling() {
+    if (performance.memory && performance.memory.jsHeapSizeLimit > 0) {
+      // Use most of the heap limit as the 100% reference
+      return performance.memory.jsHeapSizeLimit;
+    }
+    if (navigator.deviceMemory && navigator.deviceMemory > 0) {
+      // deviceMemory is approximate total RAM in GB; browsers rarely get all of it
+      return navigator.deviceMemory * 0.35 * 1024 * 1024 * 1024;
+    }
+    // Conservative fallback ~1.5 GB
+    return 1.5 * 1024 * 1024 * 1024;
+  }
+
+  function stopRam() {
+    if (ramTimer) {
+      clearTimeout(ramTimer);
+      ramTimer = null;
+    }
+    ramChunks = [];
+    ramBytes = 0;
+    try { if (globalThis.gc) globalThis.gc(); } catch (_) {}
+  }
+
+  function setRam(on) {
+    const status = document.getElementById("ramStatus");
+    if (on) {
+      stopRam();
+      active.ram = true;
+      updatePower();
+
+      const pct = Math.min(
+        95,
+        Math.max(50, parseInt(document.getElementById("ramMaxSlider").value, 10) || 80)
+      );
+      ramCeilingBytes = estimateRamCeiling();
+      const targetBytes = Math.floor(ramCeilingBytes * (pct / 100));
+
+      status.textContent =
+        "Allocating to " + pct + "% of ~" + formatRam(ramCeilingBytes) + "…";
+      status.className = "status on";
+
+      let chunkSize = 16 * 1024 * 1024; // 16 MB — finer control near the cap
+
+      function tick() {
+        if (!active.ram) return;
+
+        // Already at or past target
+        if (ramBytes >= targetBytes) {
+          status.textContent =
+            "Target reached — held " + formatRam(ramBytes) +
+            " / " + formatRam(targetBytes) +
+            " (" + pct + "% of ~" + formatRam(ramCeilingBytes) + ")";
+          status.className = "status on";
+          return;
+        }
+
+        // Shrink last chunks so we don't overshoot much
+        const remaining = targetBytes - ramBytes;
+        const thisChunk = Math.min(chunkSize, remaining);
+        if (thisChunk < 1024 * 1024) {
+          status.textContent =
+            "Target reached — held " + formatRam(ramBytes) +
+            " (" + pct + "%)";
+          status.className = "status on";
+          return;
+        }
+
+        try {
+          const buf = new ArrayBuffer(thisChunk);
+          const view = new Uint8Array(buf);
+          for (let i = 0; i < view.length; i += 4096) view[i] = 1;
+          ramChunks.push(buf);
+          ramBytes += thisChunk;
+
+          let extra = "";
+          if (performance.memory) {
+            extra =
+              " · heap " +
+              formatRam(performance.memory.usedJSHeapSize) +
+              " / " +
+              formatRam(performance.memory.jsHeapSizeLimit);
+          }
+          const usedPct = ((ramBytes / ramCeilingBytes) * 100).toFixed(0);
+          status.textContent =
+            "Held " + formatRam(ramBytes) +
+            " (" + usedPct + "% of ceiling · target " + pct + "%)" +
+            extra;
+          status.className = "status on";
+          ramTimer = setTimeout(tick, 40);
+        } catch (err) {
+          status.textContent =
+            "Stopped early — held " + formatRam(ramBytes) +
+            " (" + (err && err.name ? err.name : "OOM") + ")";
+          status.className = "status warn";
+        }
+      }
+      tick();
+    } else {
+      active.ram = false;
+      stopRam();
+      status.textContent = "Off — memory released";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("ramToggle").addEventListener("change", (e) => {
+    setRam(e.target.checked);
+  });
+
+  document.getElementById("ramMaxSlider").addEventListener("input", (e) => {
+    document.getElementById("ramMaxValue").textContent = e.target.value;
+    // If already running, restart toward the new target
+    if (active.ram) {
+      setRam(false);
+      document.getElementById("ramToggle").checked = true;
+      setRam(true);
+    }
+  });
+
+  // ---------- Motion sensors (accel, gyro, compass) max rate ----------
+  let sensorsRunning = false;
+
+  function fmtSensor(n, digits) {
+    if (n == null || !isFinite(n)) return "—";
+    return Number(n).toFixed(digits);
+  }
+
+  function onDeviceMotion(e) {
+    if (!sensorsRunning) return;
+    const a = e.accelerationIncludingGravity || e.acceleration;
+    if (a) {
+      document.getElementById("accX").textContent = fmtSensor(a.x, 3);
+      document.getElementById("accY").textContent = fmtSensor(a.y, 3);
+      document.getElementById("accZ").textContent = fmtSensor(a.z, 3);
+    }
+    const r = e.rotationRate;
+    if (r) {
+      document.getElementById("gyroA").textContent = fmtSensor(r.alpha, 2);
+      document.getElementById("gyroB").textContent = fmtSensor(r.beta, 2);
+      document.getElementById("gyroG").textContent = fmtSensor(r.gamma, 2);
+    }
+  }
+
+  function onDeviceOrientation(e) {
+    if (!sensorsRunning) return;
+    document.getElementById("oriA").textContent = fmtSensor(e.alpha, 1);
+    document.getElementById("oriB").textContent = fmtSensor(e.beta, 1);
+    document.getElementById("oriG").textContent = fmtSensor(e.gamma, 1);
+    // Compass heading when available
+    const heading =
+      e.webkitCompassHeading != null
+        ? e.webkitCompassHeading
+        : e.absolute && e.alpha != null
+          ? (360 - e.alpha) % 360
+          : null;
+    document.getElementById("oriCompass").textContent =
+      heading != null ? fmtSensor(heading, 1) + "°" : "—";
+  }
+
+  async function setSensors(on) {
+    const status = document.getElementById("sensorsStatus");
+    if (on) {
+      try {
+        // iOS 13+ permission
+        if (
+          typeof DeviceMotionEvent !== "undefined" &&
+          typeof DeviceMotionEvent.requestPermission === "function"
+        ) {
+          const p1 = await DeviceMotionEvent.requestPermission();
+          if (p1 !== "granted") throw new Error("Motion permission denied");
+        }
+        if (
+          typeof DeviceOrientationEvent !== "undefined" &&
+          typeof DeviceOrientationEvent.requestPermission === "function"
+        ) {
+          const p2 = await DeviceOrientationEvent.requestPermission();
+          if (p2 !== "granted") throw new Error("Orientation permission denied");
+        }
+
+        sensorsRunning = true;
+        active.sensors = true;
+        updatePower();
+
+        // frequency hint: some browsers accept third arg as options in addEventListener
+        window.addEventListener("devicemotion", onDeviceMotion, { passive: true });
+        window.addEventListener("deviceorientation", onDeviceOrientation, { passive: true });
+        // Absolute compass where supported
+        window.addEventListener("deviceorientationabsolute", onDeviceOrientation, { passive: true });
+
+        status.textContent = "Streaming at max rate…";
+        status.className = "status on";
+      } catch (err) {
+        sensorsRunning = false;
+        active.sensors = false;
+        updatePower();
+        status.textContent = "Error: " + (err.message || err);
+        status.className = "status warn";
+        document.getElementById("sensorsToggle").checked = false;
+      }
+    } else {
+      sensorsRunning = false;
+      active.sensors = false;
+      window.removeEventListener("devicemotion", onDeviceMotion);
+      window.removeEventListener("deviceorientation", onDeviceOrientation);
+      window.removeEventListener("deviceorientationabsolute", onDeviceOrientation);
+      ["accX", "accY", "accZ", "gyroA", "gyroB", "gyroG", "oriA", "oriB", "oriG", "oriCompass"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = "—";
+      });
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("sensorsToggle").addEventListener("change", (e) => {
+    setSensors(e.target.checked);
+  });
+
   window.addEventListener("pagehide", () => {
     stopDownload();
     setVibrate(false);
@@ -1542,6 +1858,9 @@
     setGpu(false);
     setMic(false);
     setTone(false);
+    setNfc(false);
+    setRam(false);
+    setSensors(false);
   });
 
   // ---------- Light / dark theme ----------
@@ -1569,9 +1888,40 @@
   });
 
   // ---------- Eclipse Void (blank screen + 5-tap close tab) ----------
+  const VOID_TAPS_NEEDED = 5;
   let voidTapCount = 0;
   let voidTapResetTimer = null;
   let voidActive = false;
+
+  function tryCloseTab() {
+    try {
+      window.close();
+    } catch (_) {}
+    setTimeout(() => {
+      try {
+        window.open("", "_self");
+        window.close();
+      } catch (_) {}
+      window.location.replace("about:blank");
+    }, 100);
+  }
+
+  function updateVoidTapUI() {
+    const left = Math.max(0, VOID_TAPS_NEEDED - voidTapCount);
+    const hint = document.getElementById("voidTapHint");
+    const status = document.getElementById("voidStatus");
+    if (hint) {
+      hint.textContent =
+        left === 0
+          ? "Closing…"
+          : left + " tap" + (left === 1 ? "" : "s") + " left to close tab";
+    }
+    if (status && voidActive) {
+      status.textContent =
+        "Active — " + left + " tap" + (left === 1 ? "" : "s") + " left · ✕ exits mode";
+      status.className = "status on";
+    }
+  }
 
   function setVoid(on) {
     const overlay = document.getElementById("voidOverlay");
@@ -1589,10 +1939,7 @@
     if (on) {
       overlay.hidden = false;
       document.body.style.overflow = "hidden";
-      if (status) {
-        status.textContent = "Active — tap 5× to close tab · ✕ exits mode";
-        status.className = "status on";
-      }
+      updateVoidTapUI();
     } else {
       overlay.hidden = true;
       document.body.style.overflow = "";
@@ -1601,42 +1948,32 @@
         status.textContent = "Off";
         status.className = "status";
       }
+      const hint = document.getElementById("voidTapHint");
+      if (hint) hint.textContent = "";
     }
   }
 
-  function tryCloseTab() {
-    // Browsers only allow close if script opened the window; fallback to blank
-    try {
-      window.close();
-    } catch (_) {}
-    setTimeout(() => {
-      try {
-        window.open("", "_self");
-        window.close();
-      } catch (_) {}
-      // Last resort: leave the page
-      window.location.replace("about:blank");
-    }, 100);
-  }
-
   function onVoidTap(e) {
-    // Ignore the close button (handled separately)
     if (e.target && e.target.id === "voidCloseBtn") return;
     if (!voidActive) return;
 
     voidTapCount++;
+    updateVoidTapUI();
+
     if (voidTapResetTimer) clearTimeout(voidTapResetTimer);
     voidTapResetTimer = setTimeout(() => {
       voidTapCount = 0;
       voidTapResetTimer = null;
+      updateVoidTapUI();
     }, 3000);
 
-    if (voidTapCount >= 5) {
+    if (voidTapCount >= VOID_TAPS_NEEDED) {
       voidTapCount = 0;
       if (voidTapResetTimer) {
         clearTimeout(voidTapResetTimer);
         voidTapResetTimer = null;
       }
+      updateVoidTapUI();
       tryCloseTab();
     }
   }
@@ -1651,8 +1988,32 @@
   });
 
   const voidOverlayEl = document.getElementById("voidOverlay");
-  // Single path for mouse + touch (avoids double-count on mobile)
   voidOverlayEl.addEventListener("pointerup", onVoidTap);
+
+  // ---------- Close tab when page loses focus ----------
+  document.getElementById("blurCloseToggle").addEventListener("change", (e) => {
+    const status = document.getElementById("blurCloseStatus");
+    if (e.target.checked) {
+      status.textContent = "On — tab will close when you leave this page";
+      status.className = "status on";
+    } else {
+      status.textContent = "Off";
+      status.className = "status";
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (
+      document.hidden &&
+      document.getElementById("blurCloseToggle")?.checked
+    ) {
+      tryCloseTab();
+    }
+  });
+
+  window.addEventListener("pagehide", () => {
+    // existing cleanup below also runs
+  });
 
   // Initial power + battery tracking
   updatePower();
@@ -1660,7 +2021,7 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "14";
+  const BUILD_ID = "17";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
