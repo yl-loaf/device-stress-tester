@@ -165,6 +165,29 @@ header h1 {
   margin-left: 4px;
 }
 
+.battery-stats {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  text-align: left;
+}
+
+.battery-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 0.9rem;
+  padding: 4px 0;
+  color: var(--muted);
+}
+
+.battery-row span:last-child {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
 /* Toggle switch */
 .switch {
   position: relative;
@@ -345,6 +368,50 @@ select {
   font-variant-numeric: tabular-nums;
   text-align: right;
   color: var(--text);
+}
+
+/* Eclipse Void full-screen blank */
+.void-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: #000;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html.light .void-overlay {
+  background: #fff;
+}
+
+.void-overlay[hidden] {
+  display: none !important;
+}
+
+.void-close {
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(128, 128, 128, 0.35);
+  color: #888;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+html.light .void-close {
+  background: rgba(0, 0, 0, 0.12);
+  color: #666;
 }
 
 footer {
