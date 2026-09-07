@@ -43,6 +43,139 @@
     document.getElementById("powerWatts").textContent = total.toFixed(1);
   }
 
+  // ---------- Battery level tracking (Battery Status API) ----------
+  // Samples battery.level over time; drop rates use percentage points (0–100).
+  let batteryManager = null;
+  let batterySamples = []; // { t, levelPct }
+  let batteryStartPct = null;
+  let batteryStartTime = null;
+  let batteryPollTimer = null;
+  const BATTERY_MAX_SAMPLES = 600; // ~10 min at 1 Hz
+  const BATTERY_WINDOW_MS = 120000; // 2 min window for recent average
+
+  function formatDropRate(pointsPerSec) {
+    if (pointsPerSec == null || !isFinite(pointsPerSec) || pointsPerSec < 0) {
+      return "—";
+    }
+    // Very small rates: show more precision
+    if (pointsPerSec < 0.001) return pointsPerSec.toFixed(5) + "%";
+    if (pointsPerSec < 0.01) return pointsPerSec.toFixed(4) + "%";
+    if (pointsPerSec < 0.1) return pointsPerSec.toFixed(3) + "%";
+    return pointsPerSec.toFixed(2) + "%";
+  }
+
+  function updateBatteryUI() {
+    const levelEl = document.getElementById("batteryLevel");
+    const dropSecEl = document.getElementById("batteryDropSec");
+    const dropMinEl = document.getElementById("batteryDropMin");
+    const sessionEl = document.getElementById("batterySession");
+    const hintEl = document.getElementById("batteryHint");
+    if (!levelEl) return;
+
+    if (!batteryManager) {
+      levelEl.textContent = "N/A";
+      dropSecEl.textContent = "—";
+      dropMinEl.textContent = "—";
+      sessionEl.textContent = "—";
+      return;
+    }
+
+    const pct = Math.round(batteryManager.level * 1000) / 10; // 0.1% precision
+    const charging = batteryManager.charging;
+    levelEl.textContent =
+      pct.toFixed(1) + "%" + (charging ? " (charging)" : "");
+
+    // Need at least 2 samples spanning some time
+    if (batterySamples.length < 2) {
+      dropSecEl.textContent = "warming up…";
+      dropMinEl.textContent = "warming up…";
+      sessionEl.textContent =
+        batteryStartPct != null
+          ? "start " + batteryStartPct.toFixed(1) + "%"
+          : "—";
+      return;
+    }
+
+    const now = performance.now();
+    // Recent window average (last BATTERY_WINDOW_MS)
+    const windowStart = now - BATTERY_WINDOW_MS;
+    let windowSamples = batterySamples.filter((s) => s.t >= windowStart);
+    if (windowSamples.length < 2) windowSamples = batterySamples;
+
+    const first = windowSamples[0];
+    const last = windowSamples[windowSamples.length - 1];
+    const dtSec = (last.t - first.t) / 1000;
+    let dropPerSec = 0;
+    if (dtSec > 0.5) {
+      // Only count drain (ignore charge-up as positive drop)
+      const delta = first.levelPct - last.levelPct;
+      dropPerSec = Math.max(0, delta / dtSec);
+    }
+
+    dropSecEl.textContent = formatDropRate(dropPerSec) + " /s";
+    dropMinEl.textContent = formatDropRate(dropPerSec * 60) + " /min";
+
+    // Session totals
+    if (batteryStartPct != null && batteryStartTime != null) {
+      const sessionDrop = Math.max(0, batteryStartPct - last.levelPct);
+      const sessionMin = (now - batteryStartTime) / 60000;
+      sessionEl.textContent =
+        sessionDrop.toFixed(1) + "% over " +
+        (sessionMin < 1
+          ? Math.round(sessionMin * 60) + "s"
+          : sessionMin.toFixed(1) + " min");
+    }
+
+    if (hintEl && charging) {
+      hintEl.textContent =
+        "Charging — drop rates stay at 0 until you unplug.";
+    } else if (hintEl) {
+      hintEl.textContent =
+        "Averages use the last ~2 min of samples. OS often reports level in 1% steps, so short windows look jumpy.";
+    }
+  }
+
+  function recordBatterySample() {
+    if (!batteryManager) return;
+    const levelPct = batteryManager.level * 100;
+    const t = performance.now();
+    if (batteryStartPct == null) {
+      batteryStartPct = levelPct;
+      batteryStartTime = t;
+    }
+    batterySamples.push({ t, levelPct });
+    if (batterySamples.length > BATTERY_MAX_SAMPLES) {
+      batterySamples.shift();
+    }
+    updateBatteryUI();
+  }
+
+  async function initBatteryTracking() {
+    const hintEl = document.getElementById("batteryHint");
+    if (!navigator.getBattery) {
+      if (hintEl) {
+        hintEl.textContent =
+          "Battery Status API not supported (e.g. iOS Safari). Level tracking unavailable.";
+      }
+      document.getElementById("batteryLevel").textContent = "N/A";
+      return;
+    }
+    try {
+      batteryManager = await navigator.getBattery();
+      recordBatterySample();
+      batteryManager.addEventListener("levelchange", recordBatterySample);
+      batteryManager.addEventListener("chargingchange", updateBatteryUI);
+      // Poll in case levelchange is sparse (some devices only fire on 1% steps)
+      batteryPollTimer = setInterval(recordBatterySample, 1000);
+      updateBatteryUI();
+    } catch (err) {
+      if (hintEl) {
+        hintEl.textContent = "Battery API error: " + (err.message || err);
+      }
+      document.getElementById("batteryLevel").textContent = "N/A";
+    }
+  }
+
   // ---------- Torch ----------
   let torchStream = null;
   let torchTrack = null;
@@ -921,7 +1054,7 @@
       float t = 0.0;
       float d = 1.0;
       int hit = 0;
-      for (int i = 0; i < 1024; i++) {
+      for (int i = 0; i < 1536; i++) {
         if (float(i) >= u_steps) break;
         vec3 p = ro + rd * t;
         d = map(p);
@@ -967,8 +1100,8 @@
 
     // scale: 0.45 → 2.0 at 100%, up to ~3.2 past 100%
     webglScale = 0.45 + t * 1.55 + over * 0.012;
-    // ray steps: 48 → 480 at 100%, up to ~900 past 100%
-    webglSteps = Math.round(48 + t * 432 + over * 4.2);
+    // ray steps ×1.5: ~72 → 720 at 100%, up to ~1350 past 100%
+    webglSteps = Math.round((48 + t * 432 + over * 4.2) * 1.5);
     // passes: 1 → 6 at 100%, up to 16 past 100%
     webglPasses = Math.max(1, Math.round(1 + t * 5 + over * 0.1));
 
@@ -994,13 +1127,9 @@
   }
 
   function startLoadForGoal(g) {
-    if (g >= 50) return 15;
-    if (g >= 35) return 30;
-    if (g >= 20) return 50;
-    if (g >= 15) return 75;
-    if (g >= 10) return 120; // ≤10 → start past 100% with more steps
-    if (g >= 5) return 150;
-    return 180;
+    // Always begin at 100%; adaptive control only increases from there
+    void g;
+    return 100;
   }
 
   function adjustWebglTowardGoal() {
@@ -1016,8 +1145,13 @@
     } else if (error < 0 && goalFps < 15) {
       step = Math.max(6, Math.min(20, Math.abs(error) * 1.5));
     }
-    if (error < 0) applyWebglLoad(webglLoad + step);
-    else applyWebglLoad(webglLoad - step);
+    if (error < 0) {
+      // FPS too high → increase load (never start path below 100%)
+      applyWebglLoad(webglLoad + step);
+    } else if (webglLoad > 100) {
+      // Only ease off above the 100% floor
+      applyWebglLoad(Math.max(100, webglLoad - step));
+    }
   }
 
   function initWebGL() {
@@ -1434,12 +1568,99 @@
     applyTheme(!document.documentElement.classList.contains("light"));
   });
 
-  // Initial power
+  // ---------- Eclipse Void (blank screen + 5-tap close tab) ----------
+  let voidTapCount = 0;
+  let voidTapResetTimer = null;
+  let voidActive = false;
+
+  function setVoid(on) {
+    const overlay = document.getElementById("voidOverlay");
+    const status = document.getElementById("voidStatus");
+    const toggle = document.getElementById("voidToggle");
+    if (!overlay) return;
+
+    voidActive = !!on;
+    voidTapCount = 0;
+    if (voidTapResetTimer) {
+      clearTimeout(voidTapResetTimer);
+      voidTapResetTimer = null;
+    }
+
+    if (on) {
+      overlay.hidden = false;
+      document.body.style.overflow = "hidden";
+      if (status) {
+        status.textContent = "Active — tap 5× to close tab · ✕ exits mode";
+        status.className = "status on";
+      }
+    } else {
+      overlay.hidden = true;
+      document.body.style.overflow = "";
+      if (toggle) toggle.checked = false;
+      if (status) {
+        status.textContent = "Off";
+        status.className = "status";
+      }
+    }
+  }
+
+  function tryCloseTab() {
+    // Browsers only allow close if script opened the window; fallback to blank
+    try {
+      window.close();
+    } catch (_) {}
+    setTimeout(() => {
+      try {
+        window.open("", "_self");
+        window.close();
+      } catch (_) {}
+      // Last resort: leave the page
+      window.location.replace("about:blank");
+    }, 100);
+  }
+
+  function onVoidTap(e) {
+    // Ignore the close button (handled separately)
+    if (e.target && e.target.id === "voidCloseBtn") return;
+    if (!voidActive) return;
+
+    voidTapCount++;
+    if (voidTapResetTimer) clearTimeout(voidTapResetTimer);
+    voidTapResetTimer = setTimeout(() => {
+      voidTapCount = 0;
+      voidTapResetTimer = null;
+    }, 3000);
+
+    if (voidTapCount >= 5) {
+      voidTapCount = 0;
+      if (voidTapResetTimer) {
+        clearTimeout(voidTapResetTimer);
+        voidTapResetTimer = null;
+      }
+      tryCloseTab();
+    }
+  }
+
+  document.getElementById("voidToggle").addEventListener("change", (e) => {
+    setVoid(e.target.checked);
+  });
+
+  document.getElementById("voidCloseBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    setVoid(false);
+  });
+
+  const voidOverlayEl = document.getElementById("voidOverlay");
+  // Single path for mouse + touch (avoids double-count on mobile)
+  voidOverlayEl.addEventListener("pointerup", onVoidTap);
+
+  // Initial power + battery tracking
   updatePower();
+  initBatteryTracking();
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "12";
+  const BUILD_ID = "14";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
