@@ -370,6 +370,47 @@ select {
   color: var(--text);
 }
 
+/* Motion sensors */
+.sensor-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin: 10px 0 6px;
+}
+
+@media (min-width: 380px) {
+  .sensor-grid {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+}
+
+.sensor-block {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.sensor-block h3 {
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--muted);
+}
+
+.sensor-line {
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  margin: 2px 0;
+}
+
+.sensor-line span {
+  color: var(--text);
+  font-weight: 600;
+  float: right;
+}
+
 /* Eclipse Void full-screen blank */
 .void-overlay {
   position: fixed;
@@ -412,6 +453,28 @@ html.light .void-overlay {
 html.light .void-close {
   background: rgba(0, 0, 0, 0.12);
   color: #666;
+}
+
+.void-tap-hint {
+  position: absolute;
+  left: 50%;
+  bottom: max(28px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(180, 180, 180, 0.85);
+  background: rgba(40, 40, 40, 0.35);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+html.light .void-tap-hint {
+  color: rgba(80, 80, 80, 0.9);
+  background: rgba(0, 0, 0, 0.08);
 }
 
 footer {
