@@ -12,7 +12,7 @@
   <meta http-equiv="Expires" content="0" />
   <title>Phone Stress Tester</title>
   <!-- Bump ?v= when you deploy so browsers fetch fresh assets -->
-  <link rel="stylesheet" href="styles.css?v=17" />
+  <link rel="stylesheet" href="styles.css?v=18" />
 </head>
 <body>
   <div class="app">
@@ -21,8 +21,48 @@
         <h1>Phone Stress Tester</h1>
         <button type="button" id="themeToggle" class="theme-btn" aria-label="Toggle light mode">Light</button>
       </div>
-      <p class="subtitle">Battery &amp; hardware stress tools <span id="buildTag" class="build-tag">v17</span></p>
+      <p class="subtitle">Battery &amp; hardware stress tools <span id="buildTag" class="build-tag">v18</span></p>
     </header>
+
+    <!-- Preset profiles -->
+    <section class="card preset-card">
+      <h2>Test profiles</h2>
+      <div class="preset-btns">
+        <button type="button" class="preset-btn" id="presetQuick">Quick Burst<br /><span>1 min</span></button>
+        <button type="button" class="preset-btn" id="presetEndurance">Thermal Endurance<br /><span>15 min</span></button>
+        <button type="button" class="preset-btn preset-btn-danger" id="presetTorture">Torture Test<br /><span>until abort</span></button>
+      </div>
+      <p class="status" id="presetStatus">Idle — pick a profile or use individual toggles</p>
+      <button type="button" class="preset-abort" id="presetAbort" hidden>Abort profile</button>
+      <p class="hint">Quick: CPU + network. Endurance: CPU + GPU + storage + network with throttle log. Torture: max concurrent load until you stop.</p>
+    </section>
+
+    <!-- Thermal / performance telemetry -->
+    <section class="card">
+      <h2>Thermal throttle log</h2>
+      <p class="status" id="throttleStatus">Not sampling</p>
+      <div class="throttle-stats">
+        <div class="battery-row"><span>Baseline ops/s</span><span id="telBaseline">—</span></div>
+        <div class="battery-row"><span>Current ops/s</span><span id="telCurrent">—</span></div>
+        <div class="battery-row"><span>@ 5 min</span><span id="tel5">—</span></div>
+        <div class="battery-row"><span>@ 10 min</span><span id="tel10">—</span></div>
+        <div class="battery-row"><span>@ 15 min</span><span id="tel15">—</span></div>
+        <div class="battery-row"><span>Samples</span><span id="telSamples">0</span></div>
+      </div>
+      <div class="export-row">
+        <button type="button" class="export-btn" id="exportJson">Export JSON</button>
+        <button type="button" class="export-btn" id="exportCsv">Export CSV</button>
+        <button type="button" class="export-btn" id="exportScorecard">Scorecard</button>
+      </div>
+      <p class="hint">Samples CPU/GPU/storage/network every few seconds. Drop vs baseline suggests thermal throttling.</p>
+    </section>
+
+    <!-- Scorecard (for screenshot) -->
+    <section class="card scorecard-card" id="scorecardCard" hidden>
+      <h2>Performance scorecard</h2>
+      <pre id="scorecardText" class="scorecard-pre"></pre>
+      <button type="button" class="export-btn" id="copyScorecard">Copy summary</button>
+    </section>
 
     <section class="card power-card">
       <h2>Estimated Power Draw</h2>
@@ -290,6 +330,48 @@
       <p class="hint">DeviceMotion + DeviceOrientation at the highest rate the browser allows. iOS may require a permission prompt.</p>
     </section>
 
+    <!-- Storage stress OPFS / IndexedDB -->
+    <section class="card">
+      <div class="card-header">
+        <h2>Storage (flash) stress</h2>
+        <label class="switch">
+          <input type="checkbox" id="storageToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="controls">
+        <label>
+          Pattern
+          <select id="storagePattern">
+            <option value="seq">Sequential R/W</option>
+            <option value="rand">Random R/W</option>
+            <option value="mixed">Mixed seq + random</option>
+          </select>
+        </label>
+      </div>
+      <p class="status" id="storageStatus">Off</p>
+      <p class="hint">OPFS when available, else IndexedDB. Continuous write/read cycles to stress flash + controller latency under heat.</p>
+    </section>
+
+    <!-- Multi-stream network / modem -->
+    <section class="card">
+      <div class="card-header">
+        <h2>Modem multi-stream</h2>
+        <label class="switch">
+          <input type="checkbox" id="modemToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="controls">
+        <label>
+          Streams <span id="modemStreamsValue">6</span>
+          <input type="range" id="modemStreamsSlider" min="2" max="16" value="6" step="1" />
+        </label>
+      </div>
+      <p class="status" id="modemStatus">Off</p>
+      <p class="hint">Concurrent fetches + WebSocket ping-pong when possible. Stresses Wi‑Fi/cellular radio, latency, and antenna-area heat.</p>
+    </section>
+
     <!-- Close when unfocused -->
     <section class="card">
       <div class="card-header">
@@ -328,6 +410,6 @@
     <p id="voidTapHint" class="void-tap-hint">5 taps left to close tab</p>
   </div>
 
-  <script src="app.js?v=17"></script>
+  <script src="app.js?v=18"></script>
 </body>
 </html>
