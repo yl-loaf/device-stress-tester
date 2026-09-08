@@ -12,7 +12,7 @@
   <meta http-equiv="Expires" content="0" />
   <title>Phone Stress Tester</title>
   <!-- Bump ?v= when you deploy so browsers fetch fresh assets -->
-  <link rel="stylesheet" href="styles.css?v=18" />
+  <link rel="stylesheet" href="styles.css?v=20" />
 </head>
 <body>
   <div class="app">
@@ -21,7 +21,7 @@
         <h1>Phone Stress Tester</h1>
         <button type="button" id="themeToggle" class="theme-btn" aria-label="Toggle light mode">Light</button>
       </div>
-      <p class="subtitle">Battery &amp; hardware stress tools <span id="buildTag" class="build-tag">v18</span></p>
+      <p class="subtitle">Battery &amp; hardware stress tools <span id="buildTag" class="build-tag">v20</span></p>
     </header>
 
     <!-- Preset profiles -->
@@ -31,10 +31,11 @@
         <button type="button" class="preset-btn" id="presetQuick">Quick Burst<br /><span>1 min</span></button>
         <button type="button" class="preset-btn" id="presetEndurance">Thermal Endurance<br /><span>15 min</span></button>
         <button type="button" class="preset-btn preset-btn-danger" id="presetTorture">Torture Test<br /><span>until abort</span></button>
+        <button type="button" class="preset-btn preset-btn-max" id="presetMax">MAX<br /><span>all (quiet)</span></button>
       </div>
       <p class="status" id="presetStatus">Idle — pick a profile or use individual toggles</p>
       <button type="button" class="preset-abort" id="presetAbort" hidden>Abort profile</button>
-      <p class="hint">Quick: CPU + network. Endurance: CPU + GPU + storage + network with throttle log. Torture: max concurrent load until you stop.</p>
+      <p class="hint">Quick: CPU + network. Endurance: CPU + GPU + storage + network. Torture: heavy load until abort. MAX (purple): almost everything except torch, void, audio, panel/ISP light — GPU starts last so permission prompts can appear.</p>
     </section>
 
     <!-- Thermal / performance telemetry -->
@@ -119,6 +120,34 @@
       </div>
       <p class="status" id="cameraStatus">Off</p>
       <p class="hint">Requests max resolution and frame rate (up to 4K / 60 fps when the device supports it).</p>
+    </section>
+
+    <!-- Camera + torch ISP loop -->
+    <section class="card">
+      <div class="card-header">
+        <h2>Camera + torch ISP loop</h2>
+        <label class="switch">
+          <input type="checkbox" id="ispToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="camera-wrap" id="ispWrap">
+        <video id="ispVideo" playsinline muted autoplay></video>
+        <canvas id="ispCanvas"></canvas>
+      </div>
+      <div class="controls">
+        <label>
+          Filter
+          <select id="ispFilter">
+            <option value="edge">Edge detect</option>
+            <option value="sobel">Sobel</option>
+            <option value="invert">Invert</option>
+            <option value="gray">Grayscale boost</option>
+          </select>
+        </label>
+      </div>
+      <p class="status" id="ispStatus">Off</p>
+      <p class="hint">Rear camera + torch (when supported) with live canvas filters to stress ISP, camera pipeline, and battery.</p>
     </section>
 
     <!-- Vibration -->
@@ -326,8 +355,55 @@
           <p class="sensor-line">compass <span id="oriCompass">—</span></p>
         </div>
       </div>
+      <div class="battery-row" style="margin-top:8px">
+        <span>Ambient light</span>
+        <span id="lightLux">—</span>
+      </div>
+      <div class="battery-row">
+        <span>Touch events/s</span>
+        <span id="touchEps">—</span>
+      </div>
+      <div id="touchPad" class="touch-pad">Multi-touch pad — touch here</div>
       <p class="status" id="sensorsStatus">Off</p>
-      <p class="hint">DeviceMotion + DeviceOrientation at the highest rate the browser allows. iOS may require a permission prompt.</p>
+      <p class="hint">Motion + orientation + ambient light (when available) at max rate. Touch pad measures high-frequency input sampling under load. iOS may require permission.</p>
+    </section>
+
+    <!-- Panel burn-in / flicker -->
+    <section class="card">
+      <div class="card-header">
+        <h2>Panel burn-in / flicker</h2>
+        <label class="switch">
+          <input type="checkbox" id="panelToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="controls">
+        <label>
+          Pattern
+          <select id="panelPattern">
+            <option value="rgb">RGB cycle</option>
+            <option value="flash">White / black flash</option>
+            <option value="grid">High-contrast grid</option>
+            <option value="spectrum">Spectrum sweep</option>
+          </select>
+        </label>
+      </div>
+      <p class="status" id="panelStatus">Off</p>
+      <p class="hint">Full-screen high-brightness patterns. Checks panel response, peak power, uniformity. ✕ or toggle off to exit.</p>
+    </section>
+
+    <!-- VRR / frame pacing -->
+    <section class="card">
+      <div class="card-header">
+        <h2>VRR / frame push</h2>
+        <label class="switch">
+          <input type="checkbox" id="vrrToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <canvas id="vrrCanvas" width="320" height="180"></canvas>
+      <p class="status" id="vrrStatus">Off</p>
+      <p class="hint">Continuous requestAnimationFrame load. Reports Hz, frame-time jitter, and stutter counts — useful on 90/120/144 Hz panels.</p>
     </section>
 
     <!-- Storage stress OPFS / IndexedDB -->
@@ -410,6 +486,11 @@
     <p id="voidTapHint" class="void-tap-hint">5 taps left to close tab</p>
   </div>
 
-  <script src="app.js?v=18"></script>
+  <!-- Full-screen panel test -->
+  <div id="panelOverlay" class="panel-overlay" hidden>
+    <button type="button" id="panelCloseBtn" class="panel-close" aria-label="Exit panel test">×</button>
+  </div>
+
+  <script src="app.js?v=20"></script>
 </body>
 </html>
