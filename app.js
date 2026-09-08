@@ -17,6 +17,8 @@
     nfc: 0.2,
     ram: 1.0,
     sensors: 0.3,
+    storage: 1.2,
+    modem: 1.6,
   };
 
   const active = {
@@ -32,6 +34,17 @@
     nfc: false,
     ram: false,
     sensors: false,
+    storage: false,
+    modem: false,
+  };
+
+  const metrics = {
+    cpuOpsPerSec: 0,
+    gpuFps: 0,
+    storageOpsPerSec: 0,
+    storageMBps: 0,
+    networkMbps: 0,
+    modemLatencyMs: 0,
   };
 
   let cpuWorkerCount = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4));
@@ -678,6 +691,7 @@
         setTimeout(() => {
           if (!active.cpu) return;
           const total = cpuOps.reduce((a, b) => a + b, 0);
+          metrics.cpuOpsPerSec = total;
           const mops = (total / 1e6).toFixed(1);
           status.textContent =
             n + " workers · ~" + mops + " M ops/s (tab must stay visible)";
@@ -1228,6 +1242,7 @@
     if (now - lastFpsTime >= 500) {
       fps = Math.round((frameCount * 1000) / (now - lastFpsTime));
       document.getElementById("fpsCounter").textContent = fps;
+      metrics.gpuFps = fps;
       frameCount = 0;
       lastFpsTime = now;
       if (gpuMode === "canvas") adjustLoadTowardGoal();
@@ -1848,6 +1863,643 @@
     setSensors(e.target.checked);
   });
 
+  // ---------- Storage stress (OPFS or IndexedDB) ----------
+  let storageAbort = false;
+  let storageOps = 0;
+  let storageBytes = 0;
+  let storageLastT = 0;
+  let storageLastOps = 0;
+  let storageLastBytes = 0;
+
+  function idbReq(req) {
+    return new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error("IDB error"));
+    });
+  }
+
+  async function openIdb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open("pst-storage-stress", 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains("chunks")) {
+          db.createObjectStore("chunks");
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function storageLoop() {
+    const status = document.getElementById("storageStatus");
+    const pattern = document.getElementById("storagePattern")?.value || "mixed";
+    const blockSize = 256 * 1024; // 256 KB
+    const blocks = 32;
+    storageOps = 0;
+    storageBytes = 0;
+    storageLastT = performance.now();
+    storageLastOps = 0;
+    storageLastBytes = 0;
+
+    let mode = "idb";
+    let root = null;
+    let fileHandle = null;
+
+    try {
+      if (navigator.storage && navigator.storage.getDirectory) {
+        root = await navigator.storage.getDirectory();
+        fileHandle = await root.getFileHandle("pst-stress.bin", { create: true });
+        mode = "opfs";
+      }
+    } catch (_) {
+      mode = "idb";
+    }
+
+    let db = null;
+    if (mode === "idb") {
+      try {
+        db = await openIdb();
+      } catch (err) {
+        status.textContent = "Storage unavailable: " + (err.message || err);
+        status.className = "status warn";
+        document.getElementById("storageToggle").checked = false;
+        active.storage = false;
+        updatePower();
+        return;
+      }
+    }
+
+    const payload = new Uint8Array(blockSize);
+    for (let i = 0; i < blockSize; i += 4096) payload[i] = i & 0xff;
+
+    status.textContent = "Running (" + mode.toUpperCase() + ")…";
+    status.className = "status on";
+
+    let seq = 0;
+    while (!storageAbort) {
+      const useRand = pattern === "rand" || (pattern === "mixed" && seq % 2 === 1);
+      const idx = useRand ? (Math.random() * blocks) | 0 : seq % blocks;
+      const t0 = performance.now();
+
+      try {
+        if (mode === "opfs") {
+          const writable = await fileHandle.createWritable({ keepExistingData: true });
+          await writable.seek(idx * blockSize);
+          await writable.write(payload);
+          await writable.close();
+          const file = await fileHandle.getFile();
+          const blob = file.slice(idx * blockSize, idx * blockSize + blockSize);
+          await blob.arrayBuffer();
+        } else {
+          const key = "b" + idx;
+          const wtx = db.transaction("chunks", "readwrite");
+          await idbReq(wtx.objectStore("chunks").put(payload.buffer.slice(0), key));
+          const rtx = db.transaction("chunks", "readonly");
+          await idbReq(rtx.objectStore("chunks").get(key));
+        }
+        storageOps += 2; // write + read
+        storageBytes += blockSize * 2;
+      } catch (err) {
+        status.textContent = "Error: " + (err.message || err.name);
+        status.className = "status warn";
+        break;
+      }
+
+      seq++;
+      const now = performance.now();
+      if (now - storageLastT >= 1000) {
+        const dt = (now - storageLastT) / 1000;
+        const ops = (storageOps - storageLastOps) / dt;
+        const bps = (storageBytes - storageLastBytes) / dt;
+        metrics.storageOpsPerSec = ops;
+        metrics.storageMBps = bps / (1024 * 1024);
+        status.textContent =
+          mode.toUpperCase() + " · " + ops.toFixed(0) + " ops/s · " +
+          metrics.storageMBps.toFixed(1) + " MB/s · lat ~" +
+          (dt * 1000 / Math.max(1, storageOps - storageLastOps)).toFixed(1) + " ms";
+        storageLastT = now;
+        storageLastOps = storageOps;
+        storageLastBytes = storageBytes;
+      }
+      // Yield so UI stays responsive
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    if (db) try { db.close(); } catch (_) {}
+    if (!storageAbort) {
+      // stopped due to error
+    } else {
+      status.textContent = "Off";
+      status.className = "status";
+    }
+    metrics.storageOpsPerSec = 0;
+    metrics.storageMBps = 0;
+  }
+
+  function setStorage(on) {
+    if (on) {
+      storageAbort = false;
+      active.storage = true;
+      updatePower();
+      storageLoop();
+    } else {
+      storageAbort = true;
+      active.storage = false;
+      updatePower();
+      document.getElementById("storageStatus").textContent = "Off";
+      document.getElementById("storageStatus").className = "status";
+      metrics.storageOpsPerSec = 0;
+      metrics.storageMBps = 0;
+    }
+  }
+
+  document.getElementById("storageToggle").addEventListener("change", (e) => {
+    setStorage(e.target.checked);
+  });
+
+  // ---------- Modem multi-stream (fetch + WebSocket) ----------
+  let modemAbort = null;
+  let modemBytes = 0;
+  let modemLastT = 0;
+  let modemLastBytes = 0;
+  let modemLatSum = 0;
+  let modemLatN = 0;
+  let modemSockets = [];
+
+  const MODEM_URLS = [
+    "https://speed.cloudflare.com/__down?bytes=2000000",
+    "https://proof.ovh.net/files/1Mb.dat",
+  ];
+
+  async function modemFetchWorker(signal, id) {
+    let i = 0;
+    while (!signal.aborted) {
+      const url = MODEM_URLS[i % MODEM_URLS.length] + "&t=" + Date.now() + "&s=" + id;
+      i++;
+      const t0 = performance.now();
+      try {
+        const res = await fetch(url, { signal, cache: "no-store", mode: "cors" });
+        const buf = await res.arrayBuffer();
+        modemBytes += buf.byteLength;
+        modemLatSum += performance.now() - t0;
+        modemLatN++;
+      } catch (err) {
+        if (err.name === "AbortError") break;
+        // local churn fallback
+        const size = 1 * 1024 * 1024;
+        const b = new Uint8Array(size);
+        for (let j = 0; j < size; j += 4096) b[j] = 1;
+        modemBytes += size;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    }
+  }
+
+  function modemWsWorker(signal) {
+    return new Promise((resolve) => {
+      let ws;
+      try {
+        ws = new WebSocket("wss://echo.websocket.events");
+      } catch (_) {
+        resolve();
+        return;
+      }
+      modemSockets.push(ws);
+      let timer = null;
+      const cleanup = () => {
+        if (timer) clearInterval(timer);
+        try { ws.close(); } catch (_) {}
+        resolve();
+      };
+      signal.addEventListener("abort", cleanup);
+      ws.onopen = () => {
+        timer = setInterval(() => {
+          if (signal.aborted) return cleanup();
+          try {
+            const t0 = performance.now();
+            ws.send("ping-" + t0);
+            ws._pingAt = t0;
+          } catch (_) {}
+        }, 200);
+      };
+      ws.onmessage = () => {
+        if (ws._pingAt) {
+          modemLatSum += performance.now() - ws._pingAt;
+          modemLatN++;
+          ws._pingAt = 0;
+        }
+        modemBytes += 64;
+      };
+      ws.onerror = cleanup;
+      ws.onclose = cleanup;
+    });
+  }
+
+  function setModem(on) {
+    const status = document.getElementById("modemStatus");
+    if (on) {
+      modemAbort = new AbortController();
+      modemBytes = 0;
+      modemLastT = performance.now();
+      modemLastBytes = 0;
+      modemLatSum = 0;
+      modemLatN = 0;
+      active.modem = true;
+      updatePower();
+      const n = parseInt(document.getElementById("modemStreamsSlider").value, 10) || 6;
+      status.textContent = "Running " + n + " streams…";
+      status.className = "status on";
+
+      const workers = [];
+      for (let i = 0; i < n; i++) {
+        workers.push(modemFetchWorker(modemAbort.signal, i));
+      }
+      workers.push(modemWsWorker(modemAbort.signal));
+
+      const ui = setInterval(() => {
+        if (!active.modem) {
+          clearInterval(ui);
+          return;
+        }
+        const now = performance.now();
+        const dt = (now - modemLastT) / 1000;
+        if (dt > 0.2) {
+          const bps = (modemBytes - modemLastBytes) / dt;
+          metrics.networkMbps = (bps * 8) / 1e6;
+          metrics.modemLatencyMs = modemLatN ? modemLatSum / modemLatN : 0;
+          modemLastT = now;
+          modemLastBytes = modemBytes;
+          modemLatSum = 0;
+          modemLatN = 0;
+          status.textContent =
+            n + " streams · " + metrics.networkMbps.toFixed(1) + " Mb/s · lag ~" +
+            metrics.modemLatencyMs.toFixed(0) + " ms";
+        }
+      }, 1000);
+
+      Promise.all(workers).finally(() => {
+        clearInterval(ui);
+        if (!active.modem) {
+          status.textContent = "Off";
+          status.className = "status";
+        }
+      });
+    } else {
+      active.modem = false;
+      if (modemAbort) modemAbort.abort();
+      modemSockets.forEach((ws) => { try { ws.close(); } catch (_) {} });
+      modemSockets = [];
+      metrics.networkMbps = 0;
+      metrics.modemLatencyMs = 0;
+      updatePower();
+      status.textContent = "Off";
+      status.className = "status";
+    }
+  }
+
+  document.getElementById("modemToggle").addEventListener("change", (e) => {
+    setModem(e.target.checked);
+  });
+  document.getElementById("modemStreamsSlider").addEventListener("input", (e) => {
+    document.getElementById("modemStreamsValue").textContent = e.target.value;
+  });
+
+  // ---------- Telemetry / throttle timeline ----------
+  let telemetrySamples = [];
+  let telemetryTimer = null;
+  let telemetryStart = 0;
+  let telemetryBaseline = null;
+  let marker5 = null, marker10 = null, marker15 = null;
+
+  function compositeScore() {
+    // Weighted blend of available metrics
+    return (
+      metrics.cpuOpsPerSec * 1e-6 * 40 +
+      metrics.gpuFps * 0.5 +
+      metrics.storageOpsPerSec * 0.05 +
+      metrics.networkMbps * 0.3
+    );
+  }
+
+  function startTelemetry() {
+    if (telemetryTimer) return;
+    telemetrySamples = [];
+    telemetryStart = performance.now();
+    telemetryBaseline = null;
+    marker5 = marker10 = marker15 = null;
+    document.getElementById("throttleStatus").textContent = "Sampling…";
+    document.getElementById("throttleStatus").className = "status on";
+    telemetryTimer = setInterval(() => {
+      const tSec = (performance.now() - telemetryStart) / 1000;
+      const score = compositeScore();
+      const sample = {
+        t: tSec,
+        cpuOpsPerSec: metrics.cpuOpsPerSec,
+        gpuFps: metrics.gpuFps,
+        storageOpsPerSec: metrics.storageOpsPerSec,
+        storageMBps: metrics.storageMBps,
+        networkMbps: metrics.networkMbps,
+        modemLatencyMs: metrics.modemLatencyMs,
+        score,
+      };
+      telemetrySamples.push(sample);
+      if (telemetryBaseline == null && tSec >= 8) {
+        // baseline = average of first samples after warmup
+        const early = telemetrySamples.filter((s) => s.t >= 3 && s.t <= 12);
+        if (early.length) {
+          telemetryBaseline = early.reduce((a, s) => a + s.score, 0) / early.length;
+          document.getElementById("telBaseline").textContent = telemetryBaseline.toFixed(1);
+        }
+      }
+      document.getElementById("telCurrent").textContent = score.toFixed(1);
+      document.getElementById("telSamples").textContent = String(telemetrySamples.length);
+
+      const dropPct = (s) =>
+        telemetryBaseline
+          ? ((1 - s / telemetryBaseline) * 100).toFixed(0) + "% drop"
+          : s.toFixed(1);
+
+      if (!marker5 && tSec >= 300) {
+        marker5 = score;
+        document.getElementById("tel5").textContent = dropPct(score);
+      }
+      if (!marker10 && tSec >= 600) {
+        marker10 = score;
+        document.getElementById("tel10").textContent = dropPct(score);
+      }
+      if (!marker15 && tSec >= 900) {
+        marker15 = score;
+        document.getElementById("tel15").textContent = dropPct(score);
+      }
+
+      if (telemetryBaseline && score < telemetryBaseline * 0.7) {
+        document.getElementById("throttleStatus").textContent =
+          "Likely throttling — score " + score.toFixed(1) +
+          " vs baseline " + telemetryBaseline.toFixed(1);
+        document.getElementById("throttleStatus").className = "status warn";
+      } else {
+        document.getElementById("throttleStatus").textContent =
+          "Sampling · t=" + tSec.toFixed(0) + "s";
+        document.getElementById("throttleStatus").className = "status on";
+      }
+    }, 3000);
+  }
+
+  function stopTelemetry() {
+    if (telemetryTimer) {
+      clearInterval(telemetryTimer);
+      telemetryTimer = null;
+    }
+    document.getElementById("throttleStatus").textContent =
+      telemetrySamples.length ? "Stopped · " + telemetrySamples.length + " samples" : "Not sampling";
+    document.getElementById("throttleStatus").className = "status";
+  }
+
+  function deviceSpecs() {
+    return {
+      userAgent: navigator.userAgent,
+      platform: navigator.platform,
+      hardwareConcurrency: navigator.hardwareConcurrency || null,
+      deviceMemoryGB: navigator.deviceMemory || null,
+      maxTouchPoints: navigator.maxTouchPoints || 0,
+      language: navigator.language,
+      jsHeapLimit: performance.memory ? performance.memory.jsHeapSizeLimit : null,
+      screen: {
+        width: screen.width,
+        height: screen.height,
+        pixelRatio: window.devicePixelRatio,
+      },
+    };
+  }
+
+  function buildReport() {
+    const scores = telemetrySamples.map((s) => s.score);
+    const minS = scores.length ? Math.min(...scores) : null;
+    const maxS = scores.length ? Math.max(...scores) : null;
+    const duration = telemetrySamples.length
+      ? telemetrySamples[telemetrySamples.length - 1].t
+      : 0;
+    const throttleEvents = telemetrySamples.filter(
+      (s) => telemetryBaseline && s.score < telemetryBaseline * 0.7
+    );
+    return {
+      generatedAt: new Date().toISOString(),
+      device: deviceSpecs(),
+      durationSec: duration,
+      baselineScore: telemetryBaseline,
+      minScore: minS,
+      maxScore: maxS,
+      markers: { min5: marker5, min10: marker10, min15: marker15 },
+      throttleEventCount: throttleEvents.length,
+      throttleTimeline: throttleEvents.map((s) => ({
+        t: +s.t.toFixed(1),
+        score: +s.score.toFixed(2),
+      })),
+      samples: telemetrySamples,
+    };
+  }
+
+  function downloadBlob(filename, text, mime) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  document.getElementById("exportJson").addEventListener("click", () => {
+    const report = buildReport();
+    downloadBlob(
+      "pst-report-" + Date.now() + ".json",
+      JSON.stringify(report, null, 2),
+      "application/json"
+    );
+  });
+
+  document.getElementById("exportCsv").addEventListener("click", () => {
+    const rows = [
+      ["t_sec", "cpu_ops_s", "gpu_fps", "storage_ops_s", "storage_MBps", "network_Mbps", "modem_lat_ms", "score"],
+    ];
+    telemetrySamples.forEach((s) => {
+      rows.push([
+        s.t.toFixed(1),
+        s.cpuOpsPerSec,
+        s.gpuFps,
+        s.storageOpsPerSec,
+        s.storageMBps.toFixed(3),
+        s.networkMbps.toFixed(3),
+        s.modemLatencyMs.toFixed(1),
+        s.score.toFixed(2),
+      ]);
+    });
+    downloadBlob(
+      "pst-report-" + Date.now() + ".csv",
+      rows.map((r) => r.join(",")).join("\n"),
+      "text/csv"
+    );
+  });
+
+  function renderScorecard() {
+    const r = buildReport();
+    const lines = [
+      "═══ Phone Stress Tester Scorecard ═══",
+      "Time: " + r.generatedAt,
+      "",
+      "Device:",
+      "  " + (r.device.userAgent || "").slice(0, 80),
+      "  Cores: " + (r.device.hardwareConcurrency ?? "n/a") +
+        " · RAM est: " + (r.device.deviceMemoryGB ?? "n/a") + " GB",
+      "  Screen: " + r.device.screen.width + "×" + r.device.screen.height +
+        " @" + r.device.screen.pixelRatio + "x",
+      "",
+      "Run: " + r.durationSec.toFixed(0) + "s",
+      "Baseline score: " + (r.baselineScore != null ? r.baselineScore.toFixed(1) : "n/a"),
+      "Min / Max score: " +
+        (r.minScore != null ? r.minScore.toFixed(1) : "n/a") +
+        " / " +
+        (r.maxScore != null ? r.maxScore.toFixed(1) : "n/a"),
+      "Throttle events: " + r.throttleEventCount,
+      "  @5m: " + (r.markers.min5 != null ? r.markers.min5.toFixed(1) : "—") +
+        "  @10m: " + (r.markers.min10 != null ? r.markers.min10.toFixed(1) : "—") +
+        "  @15m: " + (r.markers.min15 != null ? r.markers.min15.toFixed(1) : "—"),
+      "",
+      "Compare this card across devices.",
+      "═══════════════════════════════════",
+    ];
+    const text = lines.join("\n");
+    document.getElementById("scorecardText").textContent = text;
+    document.getElementById("scorecardCard").hidden = false;
+    return text;
+  }
+
+  document.getElementById("exportScorecard").addEventListener("click", () => {
+    renderScorecard();
+  });
+  document.getElementById("copyScorecard").addEventListener("click", async () => {
+    const text = renderScorecard();
+    try {
+      await navigator.clipboard.writeText(text);
+      document.getElementById("copyScorecard").textContent = "Copied!";
+      setTimeout(() => {
+        document.getElementById("copyScorecard").textContent = "Copy summary";
+      }, 1500);
+    } catch (_) {
+      document.getElementById("copyScorecard").textContent = "Copy failed";
+    }
+  });
+
+  // ---------- Preset profiles ----------
+  let presetTimer = null;
+  let presetName = null;
+
+  function setToggle(id, on) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (el.checked === on) {
+      // still fire handlers if needed by forcing change
+      if (on) el.dispatchEvent(new Event("change"));
+      return;
+    }
+    el.checked = on;
+    el.dispatchEvent(new Event("change"));
+  }
+
+  function abortPreset(reason) {
+    if (presetTimer) {
+      clearTimeout(presetTimer);
+      presetTimer = null;
+    }
+    presetName = null;
+    document.getElementById("presetAbort").hidden = true;
+    document.getElementById("presetStatus").textContent =
+      reason || "Idle — pick a profile or use individual toggles";
+    document.getElementById("presetStatus").className = "status";
+  }
+
+  function stopHeavyLoads() {
+    setToggle("cpuToggle", false);
+    setToggle("gpuToggle", false);
+    setToggle("storageToggle", false);
+    setToggle("modemToggle", false);
+    setToggle("downloadToggle", false);
+  }
+
+  function startPreset(name, durationMs, setup) {
+    abortPreset();
+    stopHeavyLoads();
+    stopTelemetry();
+    telemetrySamples = [];
+    marker5 = marker10 = marker15 = null;
+    ["telBaseline", "telCurrent", "tel5", "tel10", "tel15"].forEach((id) => {
+      document.getElementById(id).textContent = "—";
+    });
+    document.getElementById("telSamples").textContent = "0";
+
+    presetName = name;
+    document.getElementById("presetAbort").hidden = false;
+    document.getElementById("presetStatus").textContent =
+      name + (durationMs ? " · running…" : " · running until abort");
+    document.getElementById("presetStatus").className = "status on";
+
+    setup();
+    startTelemetry();
+
+    if (durationMs) {
+      presetTimer = setTimeout(() => {
+        stopHeavyLoads();
+        stopTelemetry();
+        abortPreset(name + " complete — export report or scorecard");
+        renderScorecard();
+      }, durationMs);
+    }
+  }
+
+  document.getElementById("presetQuick").addEventListener("click", () => {
+    startPreset("Quick Burst", 60 * 1000, () => {
+      setToggle("cpuToggle", true);
+      setToggle("modemToggle", true);
+    });
+  });
+
+  document.getElementById("presetEndurance").addEventListener("click", () => {
+    startPreset("Thermal Endurance", 15 * 60 * 1000, () => {
+      const mode = document.getElementById("gpuMode");
+      if (mode) mode.value = "webgl";
+      setToggle("cpuToggle", true);
+      setToggle("gpuToggle", true);
+      setToggle("storageToggle", true);
+      setToggle("modemToggle", true);
+    });
+  });
+
+  document.getElementById("presetTorture").addEventListener("click", () => {
+    startPreset("Torture Test", 0, () => {
+      const mode = document.getElementById("gpuMode");
+      if (mode) mode.value = "webgl";
+      const goal = document.getElementById("goalFpsSlider");
+      if (goal) {
+        goal.value = "5";
+        goal.dispatchEvent(new Event("input"));
+      }
+      setToggle("cpuToggle", true);
+      setToggle("gpuToggle", true);
+      setToggle("storageToggle", true);
+      setToggle("modemToggle", true);
+      setToggle("ramToggle", true);
+    });
+  });
+
+  document.getElementById("presetAbort").addEventListener("click", () => {
+    stopHeavyLoads();
+    stopTelemetry();
+    abortPreset("Aborted — data kept for export");
+    if (telemetrySamples.length) renderScorecard();
+  });
+
   window.addEventListener("pagehide", () => {
     stopDownload();
     setVibrate(false);
@@ -1857,6 +2509,10 @@
     setCpu(false);
     setGpu(false);
     setMic(false);
+    setStorage(false);
+    setModem(false);
+    stopTelemetry();
+    abortPreset();
     setTone(false);
     setNfc(false);
     setRam(false);
@@ -2021,7 +2677,7 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "17";
+  const BUILD_ID = "18";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
