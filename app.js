@@ -19,6 +19,9 @@
     sensors: 0.3,
     storage: 1.2,
     modem: 1.6,
+    isp: 2.2,
+    panel: 1.4,
+    vrr: 1.0,
   };
 
   const active = {
@@ -36,6 +39,9 @@
     sensors: false,
     storage: false,
     modem: false,
+    isp: false,
+    panel: false,
+    vrr: false,
   };
 
   const metrics = {
@@ -1763,8 +1769,12 @@
     }
   });
 
-  // ---------- Motion sensors (accel, gyro, compass) max rate ----------
+  // ---------- Motion sensors + touch + ambient light ----------
   let sensorsRunning = false;
+  let lightSensor = null;
+  let touchCount = 0;
+  let touchLastT = 0;
+  let touchTimer = null;
 
   function fmtSensor(n, digits) {
     if (n == null || !isFinite(n)) return "—";
@@ -1792,7 +1802,6 @@
     document.getElementById("oriA").textContent = fmtSensor(e.alpha, 1);
     document.getElementById("oriB").textContent = fmtSensor(e.beta, 1);
     document.getElementById("oriG").textContent = fmtSensor(e.gamma, 1);
-    // Compass heading when available
     const heading =
       e.webkitCompassHeading != null
         ? e.webkitCompassHeading
@@ -1803,11 +1812,16 @@
       heading != null ? fmtSensor(heading, 1) + "°" : "—";
   }
 
+  function onTouchSample(e) {
+    if (!sensorsRunning) return;
+    touchCount += e.touches ? e.touches.length : 1;
+  }
+
   async function setSensors(on) {
     const status = document.getElementById("sensorsStatus");
+    const pad = document.getElementById("touchPad");
     if (on) {
       try {
-        // iOS 13+ permission
         if (
           typeof DeviceMotionEvent !== "undefined" &&
           typeof DeviceMotionEvent.requestPermission === "function"
@@ -1826,14 +1840,48 @@
         sensorsRunning = true;
         active.sensors = true;
         updatePower();
+        touchCount = 0;
+        touchLastT = performance.now();
 
-        // frequency hint: some browsers accept third arg as options in addEventListener
         window.addEventListener("devicemotion", onDeviceMotion, { passive: true });
         window.addEventListener("deviceorientation", onDeviceOrientation, { passive: true });
-        // Absolute compass where supported
         window.addEventListener("deviceorientationabsolute", onDeviceOrientation, { passive: true });
 
-        status.textContent = "Streaming at max rate…";
+        // Ambient light (Generic Sensor API — Chrome/Android)
+        document.getElementById("lightLux").textContent = "—";
+        if (typeof AmbientLightSensor !== "undefined") {
+          try {
+            lightSensor = new AmbientLightSensor({ frequency: 10 });
+            lightSensor.addEventListener("reading", () => {
+              document.getElementById("lightLux").textContent =
+                fmtSensor(lightSensor.illuminance, 1) + " lx";
+            });
+            lightSensor.addEventListener("error", () => {
+              document.getElementById("lightLux").textContent = "n/a";
+            });
+            lightSensor.start();
+          } catch (_) {
+            document.getElementById("lightLux").textContent = "n/a";
+          }
+        } else {
+          document.getElementById("lightLux").textContent = "n/a";
+        }
+
+        if (pad) {
+          pad.addEventListener("touchstart", onTouchSample, { passive: true });
+          pad.addEventListener("touchmove", onTouchSample, { passive: true });
+          pad.addEventListener("pointermove", onTouchSample, { passive: true });
+        }
+        touchTimer = setInterval(() => {
+          const now = performance.now();
+          const dt = (now - touchLastT) / 1000;
+          const eps = dt > 0 ? touchCount / dt : 0;
+          document.getElementById("touchEps").textContent = eps.toFixed(0);
+          touchCount = 0;
+          touchLastT = now;
+        }, 1000);
+
+        status.textContent = "Streaming sensors + touch…";
         status.className = "status on";
       } catch (err) {
         sensorsRunning = false;
@@ -1849,10 +1897,25 @@
       window.removeEventListener("devicemotion", onDeviceMotion);
       window.removeEventListener("deviceorientation", onDeviceOrientation);
       window.removeEventListener("deviceorientationabsolute", onDeviceOrientation);
+      if (lightSensor) {
+        try { lightSensor.stop(); } catch (_) {}
+        lightSensor = null;
+      }
+      if (pad) {
+        pad.removeEventListener("touchstart", onTouchSample);
+        pad.removeEventListener("touchmove", onTouchSample);
+        pad.removeEventListener("pointermove", onTouchSample);
+      }
+      if (touchTimer) {
+        clearInterval(touchTimer);
+        touchTimer = null;
+      }
       ["accX", "accY", "accZ", "gyroA", "gyroB", "gyroG", "oriA", "oriB", "oriG", "oriCompass"].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.textContent = "—";
       });
+      document.getElementById("lightLux").textContent = "—";
+      document.getElementById("touchEps").textContent = "—";
       status.textContent = "Off";
       status.className = "status";
       updatePower();
@@ -1861,6 +1924,278 @@
 
   document.getElementById("sensorsToggle").addEventListener("change", (e) => {
     setSensors(e.target.checked);
+  });
+
+  // ---------- Camera + torch ISP loop (live filters) ----------
+  let ispStream = null;
+  let ispRaf = null;
+  let ispTrack = null;
+
+  function ispEdge(data, w, h) {
+    // Simple 3x3 Laplacian-ish on grayscale
+    const out = new Uint8ClampedArray(data.length);
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = (y * w + x) * 4;
+        const g = (r, c) => {
+          const j = (r * w + c) * 4;
+          return data[j] * 0.299 + data[j + 1] * 0.587 + data[j + 2] * 0.114;
+        };
+        const v = Math.abs(
+          -g(y - 1, x - 1) - g(y - 1, x) - g(y - 1, x + 1) -
+          g(y, x - 1) + 8 * g(y, x) - g(y, x + 1) -
+          g(y + 1, x - 1) - g(y + 1, x) - g(y + 1, x + 1)
+        );
+        const c = Math.min(255, v);
+        out[i] = out[i + 1] = out[i + 2] = c;
+        out[i + 3] = 255;
+      }
+    }
+    return out;
+  }
+
+  function ispProcessFrame() {
+    if (!active.isp) return;
+    const video = document.getElementById("ispVideo");
+    const canvas = document.getElementById("ispCanvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const w = 320;
+    const h = Math.round((video.videoHeight / Math.max(1, video.videoWidth)) * w) || 240;
+    if (canvas.width !== w) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    ctx.drawImage(video, 0, 0, w, h);
+    let frame = ctx.getImageData(0, 0, w, h);
+    const filter = document.getElementById("ispFilter")?.value || "edge";
+    const d = frame.data;
+
+    if (filter === "invert") {
+      for (let i = 0; i < d.length; i += 4) {
+        d[i] = 255 - d[i];
+        d[i + 1] = 255 - d[i + 1];
+        d[i + 2] = 255 - d[i + 2];
+      }
+    } else if (filter === "gray") {
+      for (let i = 0; i < d.length; i += 4) {
+        const g = Math.min(255, (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) * 1.35);
+        d[i] = d[i + 1] = d[i + 2] = g;
+      }
+    } else {
+      // edge / sobel-ish
+      const out = ispEdge(d, w, h);
+      frame = new ImageData(out, w, h);
+    }
+    ctx.putImageData(frame, 0, 0);
+    document.getElementById("ispStatus").textContent =
+      "ISP loop · " + filter + " · " + w + "×" + h + (ispTrack ? " · torch" : "");
+    document.getElementById("ispStatus").className = "status on";
+    ispRaf = requestAnimationFrame(ispProcessFrame);
+  }
+
+  async function setIsp(on) {
+    const status = document.getElementById("ispStatus");
+    const wrap = document.getElementById("ispWrap");
+    const video = document.getElementById("ispVideo");
+    if (on) {
+      try {
+        ispStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30 },
+          },
+          audio: false,
+        });
+        ispTrack = ispStream.getVideoTracks()[0];
+        const caps = ispTrack.getCapabilities?.() || {};
+        if (caps.torch) {
+          try {
+            await ispTrack.applyConstraints({ advanced: [{ torch: true }] });
+          } catch (_) {}
+        } else {
+          ispTrack = null; // no torch capability marker
+        }
+        video.srcObject = ispStream;
+        wrap.classList.add("active");
+        active.isp = true;
+        updatePower();
+        status.textContent = "Starting ISP loop…";
+        status.className = "status on";
+        ispRaf = requestAnimationFrame(ispProcessFrame);
+      } catch (err) {
+        status.textContent = "Error: " + (err.message || err.name);
+        status.className = "status warn";
+        document.getElementById("ispToggle").checked = false;
+        active.isp = false;
+        updatePower();
+      }
+    } else {
+      active.isp = false;
+      if (ispRaf) cancelAnimationFrame(ispRaf);
+      ispRaf = null;
+      if (ispStream) {
+        ispStream.getTracks().forEach((t) => t.stop());
+        ispStream = null;
+      }
+      ispTrack = null;
+      video.srcObject = null;
+      wrap.classList.remove("active");
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("ispToggle").addEventListener("change", (e) => {
+    setIsp(e.target.checked);
+  });
+
+  // ---------- Panel burn-in / flicker ----------
+  let panelTimer = null;
+  let panelFrame = 0;
+
+  function setPanel(on) {
+    const overlay = document.getElementById("panelOverlay");
+    const status = document.getElementById("panelStatus");
+    if (on) {
+      overlay.hidden = false;
+      active.panel = true;
+      updatePower();
+      panelFrame = 0;
+      status.textContent = "Panel test running (full screen)";
+      status.className = "status on";
+
+      const paint = () => {
+        if (!active.panel) return;
+        const pattern = document.getElementById("panelPattern")?.value || "rgb";
+        panelFrame++;
+        let color = "#000";
+        if (pattern === "rgb") {
+          const colors = ["#ff0000", "#00ff00", "#0000ff", "#ffffff", "#000000"];
+          color = colors[Math.floor(panelFrame / 20) % colors.length];
+          overlay.style.background = color;
+          overlay.style.backgroundImage = "";
+        } else if (pattern === "flash") {
+          color = panelFrame % 2 === 0 ? "#ffffff" : "#000000";
+          overlay.style.background = color;
+          overlay.style.backgroundImage = "";
+        } else if (pattern === "spectrum") {
+          const h = (panelFrame * 3) % 360;
+          overlay.style.background = "hsl(" + h + ",100%,50%)";
+          overlay.style.backgroundImage = "";
+        } else {
+          // grid
+          overlay.style.background = "#000";
+          overlay.style.backgroundImage =
+            "repeating-linear-gradient(0deg,#fff 0 2px,transparent 2px 16px)," +
+            "repeating-linear-gradient(90deg,#fff 0 2px,transparent 2px 16px)";
+        }
+        panelTimer = requestAnimationFrame(paint);
+      };
+      panelTimer = requestAnimationFrame(paint);
+    } else {
+      active.panel = false;
+      if (panelTimer) cancelAnimationFrame(panelTimer);
+      panelTimer = null;
+      overlay.hidden = true;
+      overlay.style.background = "";
+      overlay.style.backgroundImage = "";
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+      document.getElementById("panelToggle").checked = false;
+    }
+  }
+
+  document.getElementById("panelToggle").addEventListener("change", (e) => {
+    setPanel(e.target.checked);
+  });
+  document.getElementById("panelCloseBtn").addEventListener("click", () => setPanel(false));
+
+  // ---------- VRR / frame push ----------
+  let vrrRaf = null;
+  let vrrLast = 0;
+  let vrrFrames = 0;
+  let vrrHz = 0;
+  let vrrJitter = 0;
+  let vrrStutters = 0;
+  let vrrDts = [];
+
+  function vrrLoop(now) {
+    if (!active.vrr) return;
+    if (vrrLast) {
+      const dt = now - vrrLast;
+      vrrDts.push(dt);
+      if (vrrDts.length > 120) vrrDts.shift();
+      // Stutter: frame took >1.8× median
+      if (vrrDts.length > 10) {
+        const sorted = vrrDts.slice().sort((a, b) => a - b);
+        const med = sorted[Math.floor(sorted.length / 2)];
+        if (dt > med * 1.8 && dt > 12) vrrStutters++;
+        const mean = vrrDts.reduce((a, b) => a + b, 0) / vrrDts.length;
+        let v = 0;
+        vrrDts.forEach((x) => { v += (x - mean) * (x - mean); });
+        vrrJitter = Math.sqrt(v / vrrDts.length);
+      }
+    }
+    vrrLast = now;
+    vrrFrames++;
+
+    const canvas = document.getElementById("vrrCanvas");
+    const ctx = canvas.getContext("2d");
+    const t = now * 0.001;
+    // Moving bars to reveal tearing / stutter
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    for (let i = 0; i < 8; i++) {
+      const x = ((t * (80 + i * 30)) + i * 40) % (canvas.width + 40) - 20;
+      ctx.fillStyle = "hsl(" + ((i * 40 + t * 60) % 360) + ",90%,55%)";
+      ctx.fillRect(x, 0, 18, canvas.height);
+    }
+    ctx.fillStyle = "#fff";
+    ctx.font = "14px sans-serif";
+    ctx.fillText(vrrHz.toFixed(1) + " Hz  jitter " + vrrJitter.toFixed(2) + "ms  stutters " + vrrStutters, 8, 20);
+
+    if (vrrFrames % 30 === 0 && vrrDts.length > 5) {
+      const mean = vrrDts.reduce((a, b) => a + b, 0) / vrrDts.length;
+      vrrHz = mean > 0 ? 1000 / mean : 0;
+      document.getElementById("vrrStatus").textContent =
+        vrrHz.toFixed(1) + " Hz · jitter " + vrrJitter.toFixed(2) +
+        " ms · stutters " + vrrStutters;
+      document.getElementById("vrrStatus").className = "status on";
+    }
+
+    vrrRaf = requestAnimationFrame(vrrLoop);
+  }
+
+  function setVrr(on) {
+    const status = document.getElementById("vrrStatus");
+    if (on) {
+      active.vrr = true;
+      updatePower();
+      vrrLast = 0;
+      vrrFrames = 0;
+      vrrHz = 0;
+      vrrJitter = 0;
+      vrrStutters = 0;
+      vrrDts = [];
+      status.textContent = "Pushing frames…";
+      status.className = "status on";
+      vrrRaf = requestAnimationFrame(vrrLoop);
+    } else {
+      active.vrr = false;
+      if (vrrRaf) cancelAnimationFrame(vrrRaf);
+      vrrRaf = null;
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("vrrToggle").addEventListener("change", (e) => {
+    setVrr(e.target.checked);
   });
 
   // ---------- Storage stress (OPFS or IndexedDB) ----------
@@ -2420,12 +2755,27 @@
     document.getElementById("presetStatus").className = "status";
   }
 
+  let presetGpuDelayTimer = null;
+
   function stopHeavyLoads() {
+    if (presetGpuDelayTimer) {
+      clearTimeout(presetGpuDelayTimer);
+      presetGpuDelayTimer = null;
+    }
     setToggle("cpuToggle", false);
     setToggle("gpuToggle", false);
     setToggle("storageToggle", false);
     setToggle("modemToggle", false);
     setToggle("downloadToggle", false);
+    setToggle("cameraToggle", false);
+    setToggle("vibrateToggle", false);
+    setToggle("locationToggle", false);
+    setToggle("ramToggle", false);
+    setToggle("sensorsToggle", false);
+    setToggle("nfcToggle", false);
+    setToggle("blurCloseToggle", false);
+    setToggle("vrrToggle", false);
+    // Leave torch / void / tone / mic / isp / panel alone (not part of presets)
   }
 
   function startPreset(name, durationMs, setup) {
@@ -2493,6 +2843,53 @@
     });
   });
 
+  document.getElementById("presetMax").addEventListener("click", () => {
+    // Quiet max load: no torch, void, tone, mic, ISP (torch/preview), panel (fullscreen)
+    startPreset("MAX", 0, () => {
+      setToggle("cameraToggle", true);
+      setToggle("vibrateToggle", true);
+      setToggle("locationToggle", true);
+      setToggle("cpuToggle", true);
+      setToggle("downloadToggle", true);
+      setToggle("modemToggle", true);
+      setToggle("storageToggle", true);
+      setToggle("ramToggle", true);
+      setToggle("sensorsToggle", true);
+      setToggle("nfcToggle", true);
+      setToggle("blurCloseToggle", true);
+      setToggle("vrrToggle", true);
+
+      // Explicitly ensure excluded stay off
+      setToggle("torchToggle", false);
+      setToggle("voidToggle", false);
+      setToggle("toneToggle", false);
+      setToggle("micToggle", false);
+      setToggle("ispToggle", false);
+      setToggle("panelToggle", false);
+
+      const mode = document.getElementById("gpuMode");
+      if (mode) mode.value = "webgl";
+      const goal = document.getElementById("goalFpsSlider");
+      if (goal) {
+        goal.value = "5";
+        goal.dispatchEvent(new Event("input"));
+      }
+
+      document.getElementById("presetStatus").textContent =
+        "MAX · permissions first — GPU starts in 2.5s…";
+
+      // GPU last so camera/location/sensors/NFC prompts can appear
+      presetGpuDelayTimer = setTimeout(() => {
+        presetGpuDelayTimer = null;
+        if (presetName !== "MAX") return;
+        setToggle("gpuToggle", true);
+        document.getElementById("presetStatus").textContent =
+          "MAX · all quiet stressors + GPU · until abort";
+        document.getElementById("presetStatus").className = "status on";
+      }, 2500);
+    });
+  });
+
   document.getElementById("presetAbort").addEventListener("click", () => {
     stopHeavyLoads();
     stopTelemetry();
@@ -2517,6 +2914,9 @@
     setNfc(false);
     setRam(false);
     setSensors(false);
+    setIsp(false);
+    setPanel(false);
+    setVrr(false);
   });
 
   // ---------- Light / dark theme ----------
@@ -2677,7 +3077,7 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "18";
+  const BUILD_ID = "20";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
