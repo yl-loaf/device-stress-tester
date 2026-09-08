@@ -370,6 +370,88 @@ select {
   color: var(--text);
 }
 
+/* Presets & export */
+.preset-btns {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.preset-btn {
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 12px 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1.3;
+}
+
+.preset-btn span {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.preset-btn-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.preset-abort {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.export-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.export-btn {
+  flex: 1;
+  min-width: 100px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.throttle-stats {
+  margin-top: 8px;
+}
+
+.scorecard-pre {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin: 8px 0 10px;
+  color: var(--text);
+}
+
 /* Motion sensors */
 .sensor-grid {
   display: grid;
