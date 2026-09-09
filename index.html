@@ -12,7 +12,7 @@
   <meta http-equiv="Expires" content="0" />
   <title>Device Stress Tester</title>
   <!-- Bump ?v= when you deploy so browsers fetch fresh assets -->
-  <link rel="stylesheet" href="styles.css?v=24" />
+  <link rel="stylesheet" href="styles.css?v=25" />
 </head>
 <body>
   <div class="app">
@@ -22,7 +22,7 @@
         <button type="button" id="themeToggle" class="theme-btn" aria-label="Toggle light mode">Light</button>
         <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
       </div>
-      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v24</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v25</span></p>
     </header>
 
     <!-- Preset profiles -->
@@ -32,7 +32,7 @@
         <button type="button" class="preset-btn" id="presetQuick">Quick Burst<br /><span>1 min</span></button>
         <button type="button" class="preset-btn" id="presetEndurance">Thermal Endurance<br /><span>15 min</span></button>
         <button type="button" class="preset-btn preset-btn-danger" id="presetTorture">Torture Test<br /><span>until abort</span></button>
-        <button type="button" class="preset-btn preset-btn-max" id="presetMax">MAX<br /><span>all (quiet)</span></button>
+        <button type="button" class="preset-btn preset-btn-max" id="presetMax">MAX<br /><span>full stack</span></button>
       </div>
       <p class="status" id="presetStatus">Idle — pick a profile or use individual toggles</p>
       <button type="button" class="preset-abort" id="presetAbort" hidden>Abort profile</button>
@@ -487,6 +487,104 @@
       <p class="hint">Concurrent fetches + WebSocket ping-pong when possible. Stresses Wi‑Fi/cellular radio, latency, and antenna-area heat.</p>
     </section>
 
+    <!-- WebGPU compute -->
+    <section class="card">
+      <div class="card-header">
+        <h2>WebGPU compute</h2>
+        <label class="switch">
+          <input type="checkbox" id="webgpuComputeToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="status" id="webgpuComputeStatus">Off</p>
+      <p class="hint">WGSL compute shaders: large matrix multiply loops on the GPU (GPGPU). Needs WebGPU (Chrome 113+).</p>
+    </section>
+
+    <!-- WebGPU indirect draw -->
+    <section class="card">
+      <div class="card-header">
+        <h2>WebGPU dense draw</h2>
+        <label class="switch">
+          <input type="checkbox" id="webgpuDrawToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <canvas id="webgpuDrawCanvas" width="512" height="288" style="width:100%;border-radius:10px;background:#000"></canvas>
+      <p class="status" id="webgpuDrawStatus">Off</p>
+      <p class="hint">Continuous dense instanced draws to saturate GPU without heavy CPU upload.</p>
+    </section>
+
+    <!-- WASM / multi-core SIMD-style workers -->
+    <section class="card">
+      <div class="card-header">
+        <h2>WASM / SIMD workers</h2>
+        <label class="switch">
+          <input type="checkbox" id="wasmToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="status" id="wasmStatus">Off</p>
+      <p class="hint">Multi-worker vectorized float loops (SIMD-style). SharedArrayBuffer when COOP/COEP allows; else dedicated workers.</p>
+    </section>
+
+    <!-- Web AI inference stress -->
+    <section class="card">
+      <div class="card-header">
+        <h2>On-device AI stress</h2>
+        <label class="switch">
+          <input type="checkbox" id="aiToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="status" id="aiStatus">Off</p>
+      <p class="hint">Repeated large matmuls / attention-like ops on WebGPU when available — saturates GPU/NPU-like paths without downloading an LLM.</p>
+    </section>
+
+    <!-- Zero-GC memory saturator -->
+    <section class="card">
+      <div class="card-header">
+        <h2>Zero-GC RAM saturator</h2>
+        <label class="switch">
+          <input type="checkbox" id="zeroGcToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="status" id="zeroGcStatus">Off</p>
+      <p class="hint">Pre-allocates buffers once, then writes/shuffles in place for bus bandwidth + cache misses without GC churn.</p>
+    </section>
+
+    <!-- HDR OLED peak -->
+    <section class="card">
+      <div class="card-header">
+        <h2>HDR / peak brightness</h2>
+        <label class="switch">
+          <input type="checkbox" id="hdrToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="status" id="hdrStatus">Off</p>
+      <p class="hint">Full-screen peak white / HDR canvas when supported — max panel power. ✕ to exit.</p>
+    </section>
+
+    <!-- Heavy audio DSP -->
+    <section class="card">
+      <div class="card-header">
+        <h2>Audio DSP load</h2>
+        <label class="switch">
+          <input type="checkbox" id="audioDspToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="controls">
+        <label>
+          Oscillators <span id="audioDspCountValue">64</span>
+          <input type="range" id="audioDspCount" min="16" max="256" value="64" step="16" />
+        </label>
+      </div>
+      <p class="status" id="audioDspStatus">Off</p>
+      <p class="hint">Hundreds of oscillators through gain/filter chains — loads the audio DSP thread. Lower device volume first.</p>
+    </section>
+
     <!-- Close when unfocused -->
     <section class="card">
       <div class="card-header">
@@ -530,6 +628,12 @@
     <button type="button" id="panelCloseBtn" class="panel-close" aria-label="Exit panel test">×</button>
   </div>
 
-  <script src="app.js?v=24"></script>
+  <!-- HDR peak overlay -->
+  <div id="hdrOverlay" class="panel-overlay" hidden style="background:#fff">
+    <button type="button" id="hdrCloseBtn" class="panel-close" aria-label="Exit HDR test">×</button>
+    <canvas id="hdrCanvas" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+  </div>
+
+  <script src="app.js?v=25"></script>
 </body>
 </html>
