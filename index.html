@@ -12,7 +12,7 @@
   <meta http-equiv="Expires" content="0" />
   <title>Device Stress Tester</title>
   <!-- Bump ?v= when you deploy so browsers fetch fresh assets -->
-  <link rel="stylesheet" href="styles.css?v=23" />
+  <link rel="stylesheet" href="styles.css?v=24" />
 </head>
 <body>
   <div class="app">
@@ -22,7 +22,7 @@
         <button type="button" id="themeToggle" class="theme-btn" aria-label="Toggle light mode">Light</button>
         <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
       </div>
-      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v23</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v24</span></p>
     </header>
 
     <!-- Preset profiles -->
@@ -74,30 +74,33 @@
     </section>
 
     <section class="card power-card card-span-all">
-      <h2>Estimated Power Draw</h2>
+      <h2>Power model &amp; battery delta</h2>
       <div class="power-display">
         <span id="powerWatts">0.0</span><span class="unit">W</span>
       </div>
-      <p class="hint">Rough estimate only — browsers cannot read real power draw in watts.</p>
+      <p class="hint" id="powerModelHint">Weighted subsystem index (relative W). Battery-derived mW appears when level drops.</p>
       <div class="battery-stats">
-        <div class="battery-row">
-          <span>Battery</span>
-          <span id="batteryLevel">—</span>
-        </div>
-        <div class="battery-row">
-          <span>Drop / sec</span>
-          <span id="batteryDropSec">—</span>
-        </div>
-        <div class="battery-row">
-          <span>Drop / min</span>
-          <span id="batteryDropMin">—</span>
-        </div>
-        <div class="battery-row">
-          <span>Session</span>
-          <span id="batterySession">—</span>
-        </div>
+        <div class="battery-row"><span>Battery</span><span id="batteryLevel">—</span></div>
+        <div class="battery-row"><span>Δ%/min (stress)</span><span id="batteryDropMin">—</span></div>
+        <div class="battery-row"><span>Δ%/min (idle ctrl)</span><span id="batteryIdleRate">—</span></div>
+        <div class="battery-row"><span>Δ%/sec</span><span id="batteryDropSec">—</span></div>
+        <div class="battery-row"><span>Est. from battery</span><span id="batteryMw">—</span></div>
+        <div class="battery-row"><span>Capacity used</span><span id="batteryCap">—</span></div>
+        <div class="battery-row"><span>Thermal efficiency</span><span id="thermalEff">—</span></div>
+        <div class="battery-row"><span>Session</span><span id="batterySession">—</span></div>
+        <div class="battery-row"><span>levelchange events</span><span id="batteryEvents">0</span></div>
       </div>
-      <p class="hint" id="batteryHint">Uses Battery Status API (Chrome/Android). Not available on iOS Safari.</p>
+      <div class="controls" style="margin-top:10px">
+        <label>
+          Battery capacity (mAh)
+          <input type="number" id="batteryCapacityMah" value="4500" min="500" max="30000" step="100" />
+        </label>
+        <label>
+          Nominal voltage (V)
+          <input type="number" id="batteryVoltage" value="3.85" min="3.0" max="5.0" step="0.01" />
+        </label>
+      </div>
+      <p class="hint" id="batteryHint">High-res tracking uses precise timestamps on every <code>levelchange</code>. Power ≈ (Δ%/Δt_hours)×mAh×V. Chrome/Android only.</p>
     </section>
 
     <!-- Torch -->
@@ -527,6 +530,6 @@
     <button type="button" id="panelCloseBtn" class="panel-close" aria-label="Exit panel test">×</button>
   </div>
 
-  <script src="app.js?v=23"></script>
+  <script src="app.js?v=24"></script>
 </body>
 </html>
