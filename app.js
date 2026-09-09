@@ -4,26 +4,27 @@
   // ---------- Power estimation (rough) ----------
   // Approximate incremental draw in watts when each feature is active.
   // These are educated guesses for a typical modern phone.
+  // Weighted subsystem coefficients (relative watts from typical mobile profiling)
   const POWER = {
-    torch: 1.2,      // LED flashlight
-    camera: 1.8,     // camera pipeline + ISP
-    vibrate: 0.9,    // haptic motor continuous
-    location: 1.1,   // GNSS + radio assists
-    cpu: 4.0,        // multi-core busy workers (scaled by worker count)
-    download: 1.5,   // radio + modem under load
-    gpu: 3.5,        // heavy GPU (canvas or WebGL volume)
-    mic: 0.5,        // mic + DSP
-    tone: 0.4,       // speaker / audio amp
-    nfc: 0.2,
-    ram: 1.0,
-    sensors: 0.3,
-    storage: 1.2,
-    modem: 1.6,
-    isp: 2.2,
-    panel: 1.4,
-    vrr: 1.0,
-    bluetooth: 0.4,
-    usb: 0.3,
+    torch: 1.4,      // LED — medium-high
+    camera: 1.8,     // ISP + sensor
+    vibrate: 1.1,    // haptic continuous — medium
+    location: 1.0,   // GNSS
+    cpu: 4.5,        // all-core busy — high (scaled by workers)
+    download: 1.5,   // radio
+    gpu: 4.2,        // shader load — high
+    mic: 0.45,       // audio in
+    tone: 0.7,       // audio DSP / speaker — low-medium
+    nfc: 0.25,
+    ram: 0.9,
+    sensors: 0.35,
+    storage: 1.1,
+    modem: 1.8,      // multi-stream radio
+    isp: 2.4,        // camera + torch processing
+    panel: 2.0,      // max brightness patterns — medium-high
+    vrr: 1.2,        // continuous frame push
+    bluetooth: 0.5,
+    usb: 0.4,
   };
 
   const active = {
@@ -58,123 +59,241 @@
   };
 
   let cpuWorkerCount = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4));
+  let lastPowerIndexW = 0.3;
+  let thermalEfficiency = null; // current throughput / baseline (1 = no throttle)
 
-  function updatePower() {
-    let total = 0.3; // baseline idle-ish browser
-    for (const k of Object.keys(POWER)) {
-      if (!active[k]) continue;
-      if (k === "cpu") {
-        total += POWER.cpu * (cpuWorkerCount / 4);
-      } else {
-        total += POWER[k];
-      }
-    }
-    document.getElementById("powerWatts").textContent = total.toFixed(1);
+  function countActiveSubsystems() {
+    let n = 0;
+    for (const k of Object.keys(active)) if (active[k]) n++;
+    return n;
   }
 
-  // ---------- Battery level tracking (Battery Status API) ----------
-  // Samples battery.level over time; drop rates use percentage points (0–100).
+  /** Weighted Estimated Power Index (relative W) */
+  function updatePower() {
+    let total = 0.35; // browser chrome baseline
+    const parts = [];
+    for (const k of Object.keys(POWER)) {
+      if (!active[k]) continue;
+      let w = POWER[k];
+      if (k === "cpu") w = POWER.cpu * (cpuWorkerCount / 4);
+      if (k === "gpu" && metrics.gpuFps > 0 && metrics.gpuFps < 30) {
+        // heavier effective draw when stuck in expensive frames
+        w *= 1 + (30 - metrics.gpuFps) / 60;
+      }
+      total += w;
+      parts.push(k);
+    }
+    lastPowerIndexW = total;
+    const el = document.getElementById("powerWatts");
+    if (el) el.textContent = total.toFixed(1);
+    const hint = document.getElementById("powerModelHint");
+    if (hint) {
+      hint.textContent =
+        parts.length
+          ? "Index " + total.toFixed(1) + " W · " + parts.length + " subsystems: " + parts.slice(0, 6).join(", ") + (parts.length > 6 ? "…" : "")
+          : "Weighted subsystem index (idle). Enable stressors to raise the curve.";
+    }
+  }
+
+  // ---------- High-resolution battery delta tracking ----------
+  // Precise timestamps on every levelchange; poll only as backup.
   let batteryManager = null;
-  let batterySamples = []; // { t, levelPct }
+  let batteryLevelEvents = []; // { tPerf, tWall, levelPct, charging, source }
   let batteryStartPct = null;
   let batteryStartTime = null;
   let batteryPollTimer = null;
-  const BATTERY_MAX_SAMPLES = 600; // ~10 min at 1 Hz
-  const BATTERY_WINDOW_MS = 120000; // 2 min window for recent average
+  let batteryEventCount = 0;
+  // Idle control: periods with no heavy stressors
+  let idleRatePctPerMin = null;
+  let stressRatePctPerMin = null;
+  let batteryDerivedMw = null;
 
-  function formatDropRate(pointsPerSec) {
-    if (pointsPerSec == null || !isFinite(pointsPerSec) || pointsPerSec < 0) {
-      return "—";
-    }
-    // Very small rates: show more precision
-    if (pointsPerSec < 0.001) return pointsPerSec.toFixed(5) + "%";
-    if (pointsPerSec < 0.01) return pointsPerSec.toFixed(4) + "%";
-    if (pointsPerSec < 0.1) return pointsPerSec.toFixed(3) + "%";
-    return pointsPerSec.toFixed(2) + "%";
+  const BATTERY_MAX_EVENTS = 400;
+  const BATTERY_WINDOW_MS = 180000; // 3 min rolling window
+  const NOMINAL_V_DEFAULT = 3.85;
+
+  function formatDropRate(pointsPerUnit) {
+    if (pointsPerUnit == null || !isFinite(pointsPerUnit) || pointsPerUnit < 0) return "—";
+    if (pointsPerUnit < 0.001) return pointsPerUnit.toFixed(5) + "%";
+    if (pointsPerUnit < 0.01) return pointsPerUnit.toFixed(4) + "%";
+    if (pointsPerUnit < 0.1) return pointsPerUnit.toFixed(3) + "%";
+    return pointsPerUnit.toFixed(2) + "%";
+  }
+
+  function getBatteryCapacityMah() {
+    const el = document.getElementById("batteryCapacityMah");
+    const v = el ? parseFloat(el.value) : 4500;
+    return isFinite(v) && v > 0 ? v : 4500;
+  }
+
+  function getBatteryVoltage() {
+    const el = document.getElementById("batteryVoltage");
+    const v = el ? parseFloat(el.value) : NOMINAL_V_DEFAULT;
+    return isFinite(v) && v > 0 ? v : NOMINAL_V_DEFAULT;
+  }
+
+  function isStressActive() {
+    return !!(
+      active.cpu || active.gpu || active.download || active.modem ||
+      active.storage || active.ram || active.isp || active.panel ||
+      active.camera || active.torch
+    );
+  }
+
+  /**
+   * Power (mW) ≈ (Δ%/Δt_hours) × Capacity_mAh × V_nominal
+   * Δ% is percentage points of full charge (0–100).
+   */
+  function estimateMwFromDischarge(pctPerHour) {
+    if (pctPerHour == null || pctPerHour <= 0) return null;
+    return (pctPerHour / 100) * getBatteryCapacityMah() * getBatteryVoltage();
+  }
+
+  function rateFromEvents(events) {
+    if (!events || events.length < 2) return null;
+    const first = events[0];
+    const last = events[events.length - 1];
+    const dtSec = (last.tPerf - first.tPerf) / 1000;
+    if (dtSec < 2) return null;
+    const deltaPct = first.levelPct - last.levelPct; // positive = discharge
+    if (deltaPct < 0) return 0; // charging
+    return {
+      pctPerSec: deltaPct / dtSec,
+      pctPerMin: (deltaPct / dtSec) * 60,
+      pctPerHour: (deltaPct / dtSec) * 3600,
+      dtSec,
+      deltaPct,
+    };
   }
 
   function updateBatteryUI() {
     const levelEl = document.getElementById("batteryLevel");
-    const dropSecEl = document.getElementById("batteryDropSec");
-    const dropMinEl = document.getElementById("batteryDropMin");
-    const sessionEl = document.getElementById("batterySession");
-    const hintEl = document.getElementById("batteryHint");
     if (!levelEl) return;
 
     if (!batteryManager) {
       levelEl.textContent = "N/A";
-      dropSecEl.textContent = "—";
-      dropMinEl.textContent = "—";
-      sessionEl.textContent = "—";
       return;
     }
 
-    const pct = Math.round(batteryManager.level * 1000) / 10; // 0.1% precision
+    const pct = batteryManager.level * 100;
     const charging = batteryManager.charging;
     levelEl.textContent =
-      pct.toFixed(1) + "%" + (charging ? " (charging)" : "");
+      (Math.round(pct * 10) / 10).toFixed(1) + "%" + (charging ? " (charging)" : "");
 
-    // Need at least 2 samples spanning some time
-    if (batterySamples.length < 2) {
-      dropSecEl.textContent = "warming up…";
-      dropMinEl.textContent = "warming up…";
-      sessionEl.textContent =
-        batteryStartPct != null
-          ? "start " + batteryStartPct.toFixed(1) + "%"
-          : "—";
+    document.getElementById("batteryCap").textContent =
+      getBatteryCapacityMah() + " mAh · " + getBatteryVoltage().toFixed(2) + " V";
+    document.getElementById("batteryEvents").textContent = String(batteryEventCount);
+
+    if (batteryLevelEvents.length < 2) {
+      document.getElementById("batteryDropSec").textContent = "waiting for levelchange…";
+      document.getElementById("batteryDropMin").textContent = "—";
+      document.getElementById("batteryMw").textContent = "—";
       return;
     }
 
     const now = performance.now();
-    // Recent window average (last BATTERY_WINDOW_MS)
     const windowStart = now - BATTERY_WINDOW_MS;
-    let windowSamples = batterySamples.filter((s) => s.t >= windowStart);
-    if (windowSamples.length < 2) windowSamples = batterySamples;
+    let windowEv = batteryLevelEvents.filter((e) => e.tPerf >= windowStart);
+    if (windowEv.length < 2) windowEv = batteryLevelEvents;
 
-    const first = windowSamples[0];
-    const last = windowSamples[windowSamples.length - 1];
-    const dtSec = (last.t - first.t) / 1000;
-    let dropPerSec = 0;
-    if (dtSec > 0.5) {
-      // Only count drain (ignore charge-up as positive drop)
-      const delta = first.levelPct - last.levelPct;
-      dropPerSec = Math.max(0, delta / dtSec);
+    const stressEv = windowEv.filter((e) => e.stress);
+    const idleEv = windowEv.filter((e) => !e.stress);
+
+    const stressRate = rateFromEvents(stressEv.length >= 2 ? stressEv : windowEv);
+    const idleRate = rateFromEvents(idleEv);
+
+    if (stressRate) {
+      stressRatePctPerMin = stressRate.pctPerMin;
+      document.getElementById("batteryDropSec").textContent =
+        formatDropRate(stressRate.pctPerSec) + " /s";
+      document.getElementById("batteryDropMin").textContent =
+        formatDropRate(stressRate.pctPerMin) + " /min";
+      batteryDerivedMw = estimateMwFromDischarge(stressRate.pctPerHour);
+      if (batteryDerivedMw != null) {
+        const w = batteryDerivedMw / 1000;
+        document.getElementById("batteryMw").textContent =
+          batteryDerivedMw.toFixed(0) + " mW (" + w.toFixed(2) + " W)";
+      }
     }
 
-    dropSecEl.textContent = formatDropRate(dropPerSec) + " /s";
-    dropMinEl.textContent = formatDropRate(dropPerSec * 60) + " /min";
+    if (idleRate && idleRate.pctPerMin > 0) {
+      idleRatePctPerMin = idleRate.pctPerMin;
+      document.getElementById("batteryIdleRate").textContent =
+        formatDropRate(idleRate.pctPerMin) + " /min";
+    } else if (idleRatePctPerMin != null) {
+      document.getElementById("batteryIdleRate").textContent =
+        formatDropRate(idleRatePctPerMin) + " /min (last)";
+    } else {
+      document.getElementById("batteryIdleRate").textContent =
+        idleEv.length < 2 ? "need idle period" : "—";
+    }
 
-    // Session totals
+    // Excess stress drain vs idle control
+    const hintEl = document.getElementById("batteryHint");
+    if (charging && hintEl) {
+      hintEl.textContent = "Charging — discharge math paused until unplugged.";
+    } else if (hintEl && stressRate && idleRatePctPerMin != null) {
+      const excess = Math.max(0, stressRate.pctPerMin - idleRatePctPerMin);
+      hintEl.textContent =
+        "Stress Δ " + formatDropRate(stressRate.pctPerMin) + "/min vs idle " +
+        formatDropRate(idleRatePctPerMin) + "/min · excess " +
+        formatDropRate(excess) + "/min attributed to load.";
+    }
+
     if (batteryStartPct != null && batteryStartTime != null) {
+      const last = batteryLevelEvents[batteryLevelEvents.length - 1];
       const sessionDrop = Math.max(0, batteryStartPct - last.levelPct);
       const sessionMin = (now - batteryStartTime) / 60000;
-      sessionEl.textContent =
+      document.getElementById("batterySession").textContent =
         sessionDrop.toFixed(1) + "% over " +
-        (sessionMin < 1
-          ? Math.round(sessionMin * 60) + "s"
-          : sessionMin.toFixed(1) + " min");
+        (sessionMin < 1 ? Math.round(sessionMin * 60) + "s" : sessionMin.toFixed(1) + " min");
     }
 
-    if (hintEl && charging) {
-      hintEl.textContent =
-        "Charging — drop rates stay at 0 until you unplug.";
-    } else if (hintEl) {
-      hintEl.textContent =
-        "Averages use the last ~2 min of samples. OS often reports level in 1% steps, so short windows look jumpy.";
+    if (thermalEfficiency != null) {
+      const el = document.getElementById("thermalEff");
+      if (el) {
+        el.textContent =
+          (thermalEfficiency * 100).toFixed(0) +
+          "% of baseline throughput" +
+          (thermalEfficiency < 0.7 ? " · throttling likely" : "");
+      }
     }
   }
 
-  function recordBatterySample() {
+  function recordBatteryEvent(source) {
     if (!batteryManager) return;
     const levelPct = batteryManager.level * 100;
-    const t = performance.now();
+    const tPerf = performance.now();
+    const tWall = Date.now();
     if (batteryStartPct == null) {
       batteryStartPct = levelPct;
-      batteryStartTime = t;
+      batteryStartTime = tPerf;
     }
-    batterySamples.push({ t, levelPct });
-    if (batterySamples.length > BATTERY_MAX_SAMPLES) {
-      batterySamples.shift();
+    // Only count discrete levelchange as events; polls fill the timeline
+    if (source === "levelchange") batteryEventCount++;
+
+    const last = batteryLevelEvents[batteryLevelEvents.length - 1];
+    // Skip duplicate identical levels from polling within 200ms
+    if (
+      last &&
+      source === "poll" &&
+      Math.abs(last.levelPct - levelPct) < 1e-6 &&
+      tPerf - last.tPerf < 5000
+    ) {
+      return;
+    }
+
+    batteryLevelEvents.push({
+      tPerf,
+      tWall,
+      levelPct,
+      charging: batteryManager.charging,
+      stress: isStressActive(),
+      source,
+      powerIndexW: lastPowerIndexW,
+    });
+    if (batteryLevelEvents.length > BATTERY_MAX_EVENTS) {
+      batteryLevelEvents.shift();
     }
     updateBatteryUI();
   }
@@ -191,12 +310,22 @@
     }
     try {
       batteryManager = await navigator.getBattery();
-      recordBatterySample();
-      batteryManager.addEventListener("levelchange", recordBatterySample);
-      batteryManager.addEventListener("chargingchange", updateBatteryUI);
-      // Poll in case levelchange is sparse (some devices only fire on 1% steps)
-      batteryPollTimer = setInterval(recordBatterySample, 1000);
+      recordBatteryEvent("init");
+      batteryManager.addEventListener("levelchange", () => {
+        recordBatteryEvent("levelchange");
+      });
+      batteryManager.addEventListener("chargingchange", () => {
+        recordBatteryEvent("chargingchange");
+        updateBatteryUI();
+      });
+      // Sparse poll — real precision comes from levelchange timestamps
+      batteryPollTimer = setInterval(() => recordBatteryEvent("poll"), 5000);
       updateBatteryUI();
+
+      const capEl = document.getElementById("batteryCapacityMah");
+      const voltEl = document.getElementById("batteryVoltage");
+      if (capEl) capEl.addEventListener("change", updateBatteryUI);
+      if (voltEl) voltEl.addEventListener("change", updateBatteryUI);
     } catch (err) {
       if (hintEl) {
         hintEl.textContent = "Battery API error: " + (err.message || err);
@@ -2764,6 +2893,21 @@
     telemetryTimer = setInterval(() => {
       const tSec = (performance.now() - telemetryStart) / 1000;
       const score = compositeScore();
+      if (telemetryBaseline == null && tSec >= 8) {
+        const early = telemetrySamples.filter((s) => s.t >= 3 && s.t <= 12);
+        if (early.length) {
+          telemetryBaseline = early.reduce((a, s) => a + s.score, 0) / early.length;
+          document.getElementById("telBaseline").textContent = telemetryBaseline.toFixed(1);
+        }
+      }
+
+      // Thermal efficiency: throughput vs baseline (DVFS / heat proxy)
+      if (telemetryBaseline && telemetryBaseline > 0) {
+        thermalEfficiency = Math.max(0, Math.min(1.5, score / telemetryBaseline));
+      } else {
+        thermalEfficiency = null;
+      }
+
       const sample = {
         t: tSec,
         cpuOpsPerSec: metrics.cpuOpsPerSec,
@@ -2773,16 +2917,13 @@
         networkMbps: metrics.networkMbps,
         modemLatencyMs: metrics.modemLatencyMs,
         score,
+        powerIndexW: lastPowerIndexW,
+        thermalEfficiency,
+        stressRatePctPerMin,
+        idleRatePctPerMin,
+        batteryDerivedMw,
       };
       telemetrySamples.push(sample);
-      if (telemetryBaseline == null && tSec >= 8) {
-        // baseline = average of first samples after warmup
-        const early = telemetrySamples.filter((s) => s.t >= 3 && s.t <= 12);
-        if (early.length) {
-          telemetryBaseline = early.reduce((a, s) => a + s.score, 0) / early.length;
-          document.getElementById("telBaseline").textContent = telemetryBaseline.toFixed(1);
-        }
-      }
       document.getElementById("telCurrent").textContent = score.toFixed(1);
       document.getElementById("telSamples").textContent = String(telemetrySamples.length);
 
@@ -2804,16 +2945,21 @@
         document.getElementById("tel15").textContent = dropPct(score);
       }
 
+      const te = thermalEfficiency;
       if (telemetryBaseline && score < telemetryBaseline * 0.7) {
         document.getElementById("throttleStatus").textContent =
-          "Likely throttling — score " + score.toFixed(1) +
-          " vs baseline " + telemetryBaseline.toFixed(1);
+          "Thermal throttle likely — " + score.toFixed(1) +
+          " vs baseline " + telemetryBaseline.toFixed(1) +
+          (te != null ? " · efficiency " + (te * 100).toFixed(0) + "%" : "");
         document.getElementById("throttleStatus").className = "status warn";
       } else {
         document.getElementById("throttleStatus").textContent =
-          "Sampling · t=" + tSec.toFixed(0) + "s";
+          "Sampling · t=" + tSec.toFixed(0) + "s" +
+          (te != null ? " · eff " + (te * 100).toFixed(0) + "%" : "");
         document.getElementById("throttleStatus").className = "status on";
       }
+      updateBatteryUI();
+      updatePower();
     }, 3000);
   }
 
@@ -2866,6 +3012,30 @@
       throttleTimeline: throttleEvents.map((s) => ({
         t: +s.t.toFixed(1),
         score: +s.score.toFixed(2),
+        thermalEfficiency: s.thermalEfficiency,
+        powerIndexW: s.powerIndexW,
+      })),
+      power: {
+        modelIndexW: lastPowerIndexW,
+        coefficients: POWER,
+        battery: {
+          capacityMah: getBatteryCapacityMah(),
+          voltageV: getBatteryVoltage(),
+          stressRatePctPerMin,
+          idleRatePctPerMin,
+          derivedMw: batteryDerivedMw,
+          eventCount: batteryEventCount,
+          formula: "mW ≈ (Δ%/Δt_hours) × mAh × V",
+        },
+      },
+      batteryLevelEvents: batteryLevelEvents.map((e) => ({
+        tWall: e.tWall,
+        tPerf: +e.tPerf.toFixed(1),
+        levelPct: e.levelPct,
+        charging: e.charging,
+        stress: e.stress,
+        source: e.source,
+        powerIndexW: e.powerIndexW,
       })),
       samples: telemetrySamples,
     };
@@ -3475,7 +3645,7 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "23";
+  const BUILD_ID = "24";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
