@@ -25,6 +25,13 @@
     vrr: 1.2,        // continuous frame push
     bluetooth: 0.5,
     usb: 0.4,
+    webgpuCompute: 5.0,
+    webgpuDraw: 4.5,
+    wasm: 4.0,
+    ai: 4.8,
+    zeroGc: 1.5,
+    hdr: 2.5,
+    audioDsp: 1.8,
   };
 
   const active = {
@@ -47,6 +54,13 @@
     vrr: false,
     bluetooth: false,
     usb: false,
+    webgpuCompute: false,
+    webgpuDraw: false,
+    wasm: false,
+    ai: false,
+    zeroGc: false,
+    hdr: false,
+    audioDsp: false,
   };
 
   const metrics = {
@@ -2562,6 +2576,579 @@
     setVrr(e.target.checked);
   });
 
+  // ---------- WebGPU compute (WGSL matrix stress) ----------
+  let wgComputeRunning = false;
+  let wgComputeDevice = null;
+  let wgComputeTimer = null;
+
+  async function setWebgpuCompute(on) {
+    const status = document.getElementById("webgpuComputeStatus");
+    if (on) {
+      if (!navigator.gpu) {
+        status.textContent = "WebGPU not supported";
+        status.className = "status warn";
+        document.getElementById("webgpuComputeToggle").checked = false;
+        return;
+      }
+      try {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) throw new Error("No GPU adapter");
+        wgComputeDevice = await adapter.requestDevice();
+        const N = 512;
+        const floats = N * N;
+        const bufSize = floats * 4;
+        const shader = wgComputeDevice.createShaderModule({
+          code: `
+            @group(0) @binding(0) var<storage, read_write> data: array<f32>;
+            @compute @workgroup_size(16, 16)
+            fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+              let N: u32 = 512u;
+              if (gid.x >= N || gid.y >= N) { return; }
+              let i = gid.y * N + gid.x;
+              var acc = data[i];
+              for (var k = 0u; k < 64u; k = k + 1u) {
+                let j = (i + k * 17u) % (N * N);
+                acc = acc * 1.000001 + data[j] * 0.0001;
+                acc = sin(acc) + cos(acc * 0.5);
+              }
+              data[i] = acc;
+            }
+          `,
+        });
+        const pipeline = wgComputeDevice.createComputePipeline({
+          layout: "auto",
+          compute: { module: shader, entryPoint: "main" },
+        });
+        const storage = wgComputeDevice.createBuffer({
+          size: bufSize,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        const init = new Float32Array(floats);
+        for (let i = 0; i < floats; i++) init[i] = Math.random();
+        wgComputeDevice.queue.writeBuffer(storage, 0, init);
+        const bindGroup = wgComputeDevice.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [{ binding: 0, resource: { buffer: storage } }],
+        });
+
+        wgComputeRunning = true;
+        active.webgpuCompute = true;
+        updatePower();
+        let passes = 0;
+        const tick = () => {
+          if (!wgComputeRunning) return;
+          for (let p = 0; p < 4; p++) {
+            const enc = wgComputeDevice.createCommandEncoder();
+            const pass = enc.beginComputePass();
+            pass.setPipeline(pipeline);
+            pass.setBindGroup(0, bindGroup);
+            pass.dispatchWorkgroups(N / 16, N / 16);
+            pass.end();
+            wgComputeDevice.queue.submit([enc.finish()]);
+            passes++;
+          }
+          status.textContent = "Compute · 512² · passes " + passes;
+          status.className = "status on";
+          wgComputeTimer = requestAnimationFrame(tick);
+        };
+        status.textContent = "WebGPU compute running…";
+        status.className = "status on";
+        wgComputeTimer = requestAnimationFrame(tick);
+      } catch (err) {
+        status.textContent = "Error: " + (err.message || err);
+        status.className = "status warn";
+        document.getElementById("webgpuComputeToggle").checked = false;
+        active.webgpuCompute = false;
+        updatePower();
+      }
+    } else {
+      wgComputeRunning = false;
+      if (wgComputeTimer) cancelAnimationFrame(wgComputeTimer);
+      wgComputeTimer = null;
+      try {
+        if (wgComputeDevice) wgComputeDevice.destroy?.();
+      } catch (_) {}
+      wgComputeDevice = null;
+      active.webgpuCompute = false;
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("webgpuComputeToggle").addEventListener("change", (e) => {
+    setWebgpuCompute(e.target.checked);
+  });
+
+  // ---------- WebGPU dense instanced draw ----------
+  let wgDrawRunning = false;
+  let wgDrawRaf = null;
+  let wgDrawDevice = null;
+
+  async function setWebgpuDraw(on) {
+    const status = document.getElementById("webgpuDrawStatus");
+    const canvas = document.getElementById("webgpuDrawCanvas");
+    if (on) {
+      if (!navigator.gpu) {
+        status.textContent = "WebGPU not supported";
+        status.className = "status warn";
+        document.getElementById("webgpuDrawToggle").checked = false;
+        return;
+      }
+      try {
+        const adapter = await navigator.gpu.requestAdapter();
+        wgDrawDevice = await adapter.requestDevice();
+        const ctx = canvas.getContext("webgpu");
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        ctx.configure({ device: wgDrawDevice, format, alphaMode: "opaque" });
+        const shader = wgDrawDevice.createShaderModule({
+          code: `
+            struct VSOut { @builtin(position) pos: vec4f, @location(0) col: vec4f };
+            @vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VSOut {
+              var p = array<vec2f,3>(vec2f(0.0,0.06), vec2f(-0.05,-0.04), vec2f(0.05,-0.04));
+              let ang = f32(ii) * 0.017;
+              let c = cos(ang); let s = sin(ang);
+              let lp = p[vi];
+              let rp = vec2f(lp.x*c - lp.y*s, lp.x*s + lp.y*c);
+              let scale = 0.15 + 0.85 * fract(f32(ii) * 0.002763);
+              var o: VSOut;
+              o.pos = vec4f(rp * scale + vec2f(sin(ang*3.0)*0.5, cos(ang*2.0)*0.5), 0.0, 1.0);
+              o.col = vec4f(fract(f32(ii)*0.01), fract(f32(ii)*0.013), fract(f32(ii)*0.017), 1.0);
+              return o;
+            }
+            @fragment fn fs(@location(0) col: vec4f) -> @location(0) vec4f { return col; }
+          `,
+        });
+        const pipeline = wgDrawDevice.createRenderPipeline({
+          layout: "auto",
+          vertex: { module: shader, entryPoint: "vs" },
+          fragment: { module: shader, entryPoint: "fs", targets: [{ format }] },
+          primitive: { topology: "triangle-list" },
+        });
+        const INSTANCES = 8000;
+        wgDrawRunning = true;
+        active.webgpuDraw = true;
+        updatePower();
+        let frames = 0;
+        const frame = () => {
+          if (!wgDrawRunning) return;
+          const enc = wgDrawDevice.createCommandEncoder();
+          const pass = enc.beginRenderPass({
+            colorAttachments: [{
+              view: ctx.getCurrentTexture().createView(),
+              clearValue: { r: 0, g: 0, b: 0, a: 1 },
+              loadOp: "clear",
+              storeOp: "store",
+            }],
+          });
+          pass.setPipeline(pipeline);
+          pass.draw(3, INSTANCES);
+          pass.end();
+          wgDrawDevice.queue.submit([enc.finish()]);
+          frames++;
+          if (frames % 30 === 0) {
+            status.textContent = "Draw · " + INSTANCES + " instances · frames " + frames;
+            status.className = "status on";
+          }
+          wgDrawRaf = requestAnimationFrame(frame);
+        };
+        status.textContent = "Dense draw running…";
+        status.className = "status on";
+        wgDrawRaf = requestAnimationFrame(frame);
+      } catch (err) {
+        status.textContent = "Error: " + (err.message || err);
+        status.className = "status warn";
+        document.getElementById("webgpuDrawToggle").checked = false;
+        active.webgpuDraw = false;
+        updatePower();
+      }
+    } else {
+      wgDrawRunning = false;
+      if (wgDrawRaf) cancelAnimationFrame(wgDrawRaf);
+      wgDrawRaf = null;
+      try { wgDrawDevice?.destroy?.(); } catch (_) {}
+      wgDrawDevice = null;
+      active.webgpuDraw = false;
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("webgpuDrawToggle").addEventListener("change", (e) => {
+    setWebgpuDraw(e.target.checked);
+  });
+
+  // ---------- Multi-worker SIMD-style / WASM-like CPU stress ----------
+  let wasmWorkers = [];
+  let wasmTimer = null;
+
+  const WASM_WORKER_SRC = `
+    let run = false;
+    function burn() {
+      const n = 65536;
+      const a = new Float64Array(n);
+      const b = new Float64Array(n);
+      for (let i = 0; i < n; i++) { a[i] = i * 0.001; b[i] = 1 - i * 0.0001; }
+      let checksum = 0;
+      const loop = () => {
+        if (!run) return;
+        // 4-wide software vector style
+        for (let i = 0; i < n; i += 4) {
+          a[i] = a[i] * b[i] + Math.sin(a[i]);
+          a[i+1] = a[i+1] * b[i+1] + Math.sin(a[i+1]);
+          a[i+2] = a[i+2] * b[i+2] + Math.sin(a[i+2]);
+          a[i+3] = a[i+3] * b[i+3] + Math.sin(a[i+3]);
+        }
+        checksum += a[0];
+        self.postMessage({ checksum });
+        setTimeout(loop, 0);
+      };
+      loop();
+    }
+    self.onmessage = (e) => {
+      if (e.data === "start") { run = true; burn(); }
+      if (e.data === "stop") run = false;
+    };
+  `;
+
+  function setWasm(on) {
+    const status = document.getElementById("wasmStatus");
+    if (on) {
+      try {
+        const cores = navigator.hardwareConcurrency || 4;
+        const n = Math.min(8, Math.max(2, cores));
+        const blob = new Blob([WASM_WORKER_SRC], { type: "application/javascript" });
+        const url = URL.createObjectURL(blob);
+        let ops = 0;
+        for (let i = 0; i < n; i++) {
+          const w = new Worker(url);
+          w.onmessage = () => { ops++; };
+          w.postMessage("start");
+          wasmWorkers.push(w);
+        }
+        URL.revokeObjectURL(url);
+        active.wasm = true;
+        updatePower();
+        wasmTimer = setInterval(() => {
+          status.textContent = n + " workers · ~" + ops + " ticks/s (SIMD-style loops)";
+          status.className = "status on";
+          ops = 0;
+        }, 1000);
+        status.textContent = "Running " + n + " workers…";
+        status.className = "status on";
+      } catch (err) {
+        status.textContent = "Error: " + (err.message || err);
+        status.className = "status warn";
+        document.getElementById("wasmToggle").checked = false;
+      }
+    } else {
+      active.wasm = false;
+      wasmWorkers.forEach((w) => {
+        try { w.postMessage("stop"); w.terminate(); } catch (_) {}
+      });
+      wasmWorkers = [];
+      if (wasmTimer) clearInterval(wasmTimer);
+      wasmTimer = null;
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("wasmToggle").addEventListener("change", (e) => {
+    setWasm(e.target.checked);
+  });
+
+  // ---------- On-device AI-like WebGPU matmul / attention stress ----------
+  let aiRunning = false;
+  let aiRaf = null;
+  let aiDevice = null;
+
+  async function setAi(on) {
+    const status = document.getElementById("aiStatus");
+    if (on) {
+      // Prefer WebGPU path; fallback to CPU matmul workers
+      if (navigator.gpu) {
+        try {
+          const adapter = await navigator.gpu.requestAdapter();
+          aiDevice = await adapter.requestDevice();
+          const M = 256;
+          const shader = aiDevice.createShaderModule({
+            code: `
+              @group(0) @binding(0) var<storage, read_write> x: array<f32>;
+              @compute @workgroup_size(16, 16)
+              fn main(@builtin(global_invocation_id) g: vec3<u32>) {
+                let M: u32 = 256u;
+                if (g.x >= M || g.y >= M) { return; }
+                var sum = 0.0;
+                for (var k = 0u; k < M; k = k + 1u) {
+                  sum += x[g.y * M + k] * x[k * M + g.x];
+                }
+                // softmax-ish nonlinearity
+                x[g.y * M + g.x] = sum / (1.0 + abs(sum));
+              }
+            `,
+          });
+          const pipeline = aiDevice.createComputePipeline({
+            layout: "auto",
+            compute: { module: shader, entryPoint: "main" },
+          });
+          const buf = aiDevice.createBuffer({
+            size: M * M * 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          });
+          const init = new Float32Array(M * M);
+          for (let i = 0; i < init.length; i++) init[i] = (Math.random() - 0.5) * 0.1;
+          aiDevice.queue.writeBuffer(buf, 0, init);
+          const bg = aiDevice.createBindGroup({
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [{ binding: 0, resource: { buffer: buf } }],
+          });
+          aiRunning = true;
+          active.ai = true;
+          updatePower();
+          let steps = 0;
+          const tick = () => {
+            if (!aiRunning) return;
+            const enc = aiDevice.createCommandEncoder();
+            const pass = enc.beginComputePass();
+            pass.setPipeline(pipeline);
+            pass.setBindGroup(0, bg);
+            for (let i = 0; i < 3; i++) {
+              pass.dispatchWorkgroups(M / 16, M / 16);
+            }
+            pass.end();
+            aiDevice.queue.submit([enc.finish()]);
+            steps++;
+            status.textContent = "AI-style matmul 256² · steps " + steps + " (WebGPU)";
+            status.className = "status on";
+            aiRaf = requestAnimationFrame(tick);
+          };
+          aiRaf = requestAnimationFrame(tick);
+          return;
+        } catch (err) {
+          status.textContent = "WebGPU AI failed: " + (err.message || err);
+        }
+      }
+      // CPU fallback
+      active.ai = true;
+      updatePower();
+      aiRunning = true;
+      const tickCpu = () => {
+        if (!aiRunning) return;
+        const n = 128;
+        const a = new Float32Array(n * n);
+        for (let i = 0; i < a.length; i++) a[i] = Math.random();
+        for (let i = 0; i < n; i++) {
+          for (let j = 0; j < n; j++) {
+            let s = 0;
+            for (let k = 0; k < n; k++) s += a[i * n + k] * a[k * n + j];
+            a[i * n + j] = s;
+          }
+        }
+        status.textContent = "AI-style matmul 128² (CPU fallback)";
+        status.className = "status on";
+        aiRaf = requestAnimationFrame(tickCpu);
+      };
+      aiRaf = requestAnimationFrame(tickCpu);
+    } else {
+      aiRunning = false;
+      if (aiRaf) cancelAnimationFrame(aiRaf);
+      aiRaf = null;
+      try { aiDevice?.destroy?.(); } catch (_) {}
+      aiDevice = null;
+      active.ai = false;
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("aiToggle").addEventListener("change", (e) => {
+    setAi(e.target.checked);
+  });
+
+  // ---------- Zero-GC memory saturator ----------
+  let zeroGcBuffers = [];
+  let zeroGcTimer = null;
+
+  function setZeroGc(on) {
+    const status = document.getElementById("zeroGcStatus");
+    if (on) {
+      try {
+        zeroGcBuffers = [];
+        const chunk = 8 * 1024 * 1024; // 8MB
+        const count = 24; // ~192MB retained
+        for (let i = 0; i < count; i++) {
+          const buf = new ArrayBuffer(chunk);
+          const view = new Uint32Array(buf);
+          for (let j = 0; j < view.length; j += 1024) view[j] = j;
+          zeroGcBuffers.push(view);
+        }
+        active.zeroGc = true;
+        updatePower();
+        let passes = 0;
+        zeroGcTimer = setInterval(() => {
+          // In-place shuffle / write — no new allocations
+          for (let b = 0; b < zeroGcBuffers.length; b++) {
+            const v = zeroGcBuffers[b];
+            const len = v.length;
+            for (let i = 0; i < len; i += 64) {
+              const j = (i * 1103515245 + passes) & (len - 1);
+              const t = v[i];
+              v[i] = v[j] + 1;
+              v[j] = t;
+            }
+          }
+          passes++;
+          status.textContent =
+            "Saturating · " + zeroGcBuffers.length + "×8MB retained · pass " + passes;
+          status.className = "status on";
+        }, 16);
+        status.textContent = "Allocated · shuffling in place…";
+        status.className = "status on";
+      } catch (err) {
+        status.textContent = "Error: " + (err.message || err);
+        status.className = "status warn";
+        document.getElementById("zeroGcToggle").checked = false;
+        zeroGcBuffers = [];
+      }
+    } else {
+      active.zeroGc = false;
+      if (zeroGcTimer) clearInterval(zeroGcTimer);
+      zeroGcTimer = null;
+      zeroGcBuffers = [];
+      status.textContent = "Off — buffers released";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("zeroGcToggle").addEventListener("change", (e) => {
+    setZeroGc(e.target.checked);
+  });
+
+  // ---------- HDR / peak brightness ----------
+  let hdrRaf = null;
+
+  function setHdr(on) {
+    const overlay = document.getElementById("hdrOverlay");
+    const status = document.getElementById("hdrStatus");
+    const canvas = document.getElementById("hdrCanvas");
+    if (on) {
+      overlay.hidden = false;
+      active.hdr = true;
+      updatePower();
+      const ctx = canvas.getContext("2d", { colorSpace: "display-p3" }) || canvas.getContext("2d");
+      // Try HDR canvas configuration when available
+      try {
+        if (canvas.configureHighDynamicRange) {
+          canvas.configureHighDynamicRange({ mode: "extended" });
+        }
+      } catch (_) {}
+      const paint = (t) => {
+        if (!active.hdr) return;
+        canvas.width = window.innerWidth * (window.devicePixelRatio || 1);
+        canvas.height = window.innerHeight * (window.devicePixelRatio || 1);
+        // Peak white + moving bright geometry
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const g = ctx.createRadialGradient(
+          canvas.width / 2, canvas.height / 2, 10,
+          canvas.width / 2, canvas.height / 2, canvas.width * 0.4
+        );
+        g.addColorStop(0, "#ffffff");
+        g.addColorStop(1, "#ffffee");
+        ctx.fillStyle = g;
+        const x = canvas.width / 2 + Math.sin(t * 0.002) * canvas.width * 0.2;
+        const y = canvas.height / 2 + Math.cos(t * 0.0015) * canvas.height * 0.2;
+        ctx.beginPath();
+        ctx.arc(x, y, canvas.width * 0.15, 0, Math.PI * 2);
+        ctx.fill();
+        status.textContent = "HDR/peak white · full screen";
+        status.className = "status on";
+        hdrRaf = requestAnimationFrame(paint);
+      };
+      hdrRaf = requestAnimationFrame(paint);
+    } else {
+      active.hdr = false;
+      if (hdrRaf) cancelAnimationFrame(hdrRaf);
+      hdrRaf = null;
+      overlay.hidden = true;
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+      document.getElementById("hdrToggle").checked = false;
+    }
+  }
+
+  document.getElementById("hdrToggle").addEventListener("change", (e) => {
+    setHdr(e.target.checked);
+  });
+  document.getElementById("hdrCloseBtn").addEventListener("click", () => setHdr(false));
+
+  // ---------- Heavy Web Audio DSP ----------
+  let audioDspCtx = null;
+  let audioDspNodes = [];
+
+  function setAudioDsp(on) {
+    const status = document.getElementById("audioDspStatus");
+    if (on) {
+      try {
+        audioDspCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const n = parseInt(document.getElementById("audioDspCount").value, 10) || 64;
+        const master = audioDspCtx.createGain();
+        master.gain.value = 0.0008 * Math.min(1, 32 / n); // keep quiet but DSP-heavy
+        master.connect(audioDspCtx.destination);
+        for (let i = 0; i < n; i++) {
+          const osc = audioDspCtx.createOscillator();
+          osc.type = ["sine", "square", "sawtooth", "triangle"][i % 4];
+          osc.frequency.value = 80 + (i * 37) % 2000;
+          const filt = audioDspCtx.createBiquadFilter();
+          filt.type = "lowpass";
+          filt.frequency.value = 400 + (i * 20) % 4000;
+          const g = audioDspCtx.createGain();
+          g.gain.value = 1;
+          const delay = audioDspCtx.createDelay(0.3);
+          delay.delayTime.value = 0.01 + (i % 20) * 0.005;
+          osc.connect(filt);
+          filt.connect(delay);
+          delay.connect(g);
+          g.connect(master);
+          osc.start();
+          audioDspNodes.push(osc, filt, delay, g);
+        }
+        active.audioDsp = true;
+        updatePower();
+        status.textContent = n + " oscillators + filters/delays active";
+        status.className = "status on";
+      } catch (err) {
+        status.textContent = "Error: " + (err.message || err);
+        status.className = "status warn";
+        document.getElementById("audioDspToggle").checked = false;
+      }
+    } else {
+      active.audioDsp = false;
+      audioDspNodes.forEach((n) => {
+        try { if (n.stop) n.stop(); n.disconnect(); } catch (_) {}
+      });
+      audioDspNodes = [];
+      try { audioDspCtx?.close(); } catch (_) {}
+      audioDspCtx = null;
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("audioDspToggle").addEventListener("change", (e) => {
+    setAudioDsp(e.target.checked);
+  });
+  document.getElementById("audioDspCount").addEventListener("input", (e) => {
+    document.getElementById("audioDspCountValue").textContent = e.target.value;
+  });
+
   // ---------- Storage stress (OPFS or IndexedDB) ----------
   let storageAbort = false;
   let storageOps = 0;
@@ -3180,7 +3767,14 @@
     setToggle("nfcToggle", false);
     setToggle("blurCloseToggle", false);
     setToggle("vrrToggle", false);
-    // Leave torch / void / tone / mic / isp / panel alone (not part of presets)
+    setToggle("webgpuComputeToggle", false);
+    setToggle("webgpuDrawToggle", false);
+    setToggle("wasmToggle", false);
+    setToggle("aiToggle", false);
+    setToggle("zeroGcToggle", false);
+    setToggle("hdrToggle", false);
+    setToggle("audioDspToggle", false);
+    // Leave torch / void / tone / mic / isp / panel alone unless part of a preset
   }
 
   function startPreset(name, durationMs, setup) {
@@ -3300,7 +3894,11 @@
         setToggle("nfcToggle", true);
         setToggle("blurCloseToggle", true);
         setToggle("vrrToggle", true);
+        setToggle("wasmToggle", true);
+        setToggle("zeroGcToggle", true);
+        setToggle("audioDspToggle", true);
 
+        // Still exclude simple torch / void / single-tone / mic / ISP torch-loop / RGB panel
         setToggle("torchToggle", false);
         setToggle("voidToggle", false);
         setToggle("toneToggle", false);
@@ -3311,14 +3909,18 @@
         applyGpuHeavy();
 
         document.getElementById("presetStatus").textContent =
-          "MAX · permissions first — GPU starts in 2.5s…";
+          "MAX · permissions first — GPU/WebGPU in 2.5s…";
 
         presetGpuDelayTimer = setTimeout(() => {
           presetGpuDelayTimer = null;
           if (presetName !== "MAX") return;
           setToggle("gpuToggle", true);
+          setToggle("webgpuComputeToggle", true);
+          setToggle("webgpuDrawToggle", true);
+          setToggle("aiToggle", true);
+          setToggle("hdrToggle", true);
           document.getElementById("presetStatus").textContent =
-            "MAX · all quiet stressors + GPU · until abort";
+            "MAX · full stack (WebGPU/AI/HDR/DSP) · until abort";
           document.getElementById("presetStatus").className = "status on";
         }, 2500);
       });
@@ -3458,6 +4060,13 @@
     setVrr(false);
     setBluetooth(false);
     setUsb(false);
+    setWebgpuCompute(false);
+    setWebgpuDraw(false);
+    setWasm(false);
+    setAi(false);
+    setZeroGc(false);
+    setHdr(false);
+    setAudioDsp(false);
   });
 
   // ---------- Light / dark theme ----------
@@ -3645,7 +4254,7 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "24";
+  const BUILD_ID = "25";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
