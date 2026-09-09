@@ -3941,17 +3941,104 @@
     return params;
   }
 
-  function buildProfileHash(key, durationSec) {
+  function buildProfileHash(key, durationSec, spawnLeft) {
     let h = "profile=" + encodeURIComponent(key);
     if (durationSec != null && durationSec !== "") {
       h += "&duration=" + encodeURIComponent(String(durationSec));
     }
+    if (spawnLeft != null && spawnLeft > 0) {
+      h += "&spawn=" + encodeURIComponent(String(spawnLeft));
+    }
     return h;
+  }
+
+  function profileUrl(key, durationSec, spawnLeft) {
+    return (
+      location.origin +
+      location.pathname +
+      location.search +
+      "#" +
+      buildProfileHash(key, durationSec, spawnLeft)
+    );
+  }
+
+  /** Remaining tabs the user still needs to open (popup-blocker chain). */
+  let spawnRemaining = 0;
+
+  function getProfileKeyAndDuration() {
+    const key = lastProfileKey || parseHashParams().profile || "torture";
+    let dur = lastProfileDurationSec;
+    if (dur == null) {
+      const p = parseHashParams();
+      if (p.duration !== undefined && p.duration !== "") {
+        const n = parseFloat(p.duration);
+        dur = isFinite(n) ? n : 0;
+      } else {
+        dur = 0;
+      }
+    }
+    return { key, dur };
+  }
+
+  function updateSpawnBar() {
+    const bar = document.getElementById("spawnBar");
+    const text = document.getElementById("spawnBarText");
+    const btn = document.getElementById("spawnNextBtn");
+    if (!bar) return;
+    if (spawnRemaining > 0) {
+      bar.hidden = false;
+      text.textContent =
+        spawnRemaining +
+        " more tab" +
+        (spawnRemaining === 1 ? "" : "s") +
+        " to open with the same preset. Browsers block bulk popups — click once per tab.";
+      btn.textContent =
+        "Open next tab (" + spawnRemaining + " left)";
+    } else {
+      bar.hidden = true;
+    }
+  }
+
+  /** Open one child tab; child gets spawn=remaining-1 so the chain continues there. */
+  function openOneSpawnTab() {
+    if (spawnRemaining <= 0) {
+      updateSpawnBar();
+      return false;
+    }
+    const { key, dur } = getProfileKeyAndDuration();
+    const leftAfter = spawnRemaining - 1;
+    const url = profileUrl(key, dur, leftAfter);
+    const w = window.open(url, "_blank");
+    if (w) {
+      spawnRemaining = leftAfter;
+      updateSpawnBar();
+      document.getElementById("presetStatus").textContent =
+        leftAfter > 0
+          ? "Opened a tab · " + leftAfter + " still left — click Open next tab"
+          : "All requested tabs opened";
+      document.getElementById("presetStatus").className = "status on";
+      return true;
+    }
+    document.getElementById("presetStatus").textContent =
+      "Popup blocked — allow popups for this site, then click Open next tab";
+    document.getElementById("presetStatus").className = "status warn";
+    updateSpawnBar();
+    return false;
   }
 
   function applyHashProfile() {
     const p = parseHashParams();
-    if (!p.profile) return;
+    if (!p.profile) {
+      // spawn-only hash still shows the bar
+      if (p.spawn) {
+        const s = parseInt(p.spawn, 10);
+        if (s > 0) {
+          spawnRemaining = s;
+          updateSpawnBar();
+        }
+      }
+      return;
+    }
     let dur = null;
     if (p.duration !== undefined && p.duration !== "") {
       const n = parseFloat(p.duration);
@@ -3962,6 +4049,14 @@
       document.getElementById("presetStatus").textContent =
         "Unknown profile in URL: " + p.profile;
       document.getElementById("presetStatus").className = "status warn";
+    }
+    // Continue multi-tab chain if URL asked for more spawns
+    if (p.spawn) {
+      const s = parseInt(p.spawn, 10);
+      if (isFinite(s) && s > 0) {
+        spawnRemaining = s;
+        updateSpawnBar();
+      }
     }
   }
 
@@ -4000,7 +4095,7 @@
     if (telemetrySamples.length) renderScorecard();
   });
 
-  // Multi-tab launcher (same profile hash)
+  // Multi-tab launcher — browsers allow ~1 window.open per user gesture
   document.getElementById("multiTabSlider").addEventListener("input", (e) => {
     document.getElementById("multiTabValue").textContent = e.target.value;
   });
@@ -4010,26 +4105,35 @@
       10,
       Math.max(1, parseInt(document.getElementById("multiTabSlider").value, 10) || 1)
     );
-    const key = lastProfileKey || parseHashParams().profile || "torture";
-    let dur = lastProfileDurationSec;
-    if (dur == null) {
-      const p = parseHashParams();
-      dur = p.duration !== undefined && p.duration !== "" ? p.duration : 0;
-    }
-    const hash = buildProfileHash(key, dur);
-    const base =
-      location.origin + location.pathname + location.search + "#" + hash;
+    const { key, dur } = getProfileKeyAndDuration();
+    lastProfileKey = key;
+    lastProfileDurationSec = dur;
+
+    // Try to open as many as the browser allows in this single click
     let opened = 0;
     for (let i = 0; i < n; i++) {
-      const w = window.open(base, "_blank");
-      if (w) opened++;
+      const leftAfter = n - opened - 1;
+      const url = profileUrl(key, dur, leftAfter > 0 ? leftAfter : 0);
+      const w = window.open(url, "_blank");
+      if (!w) break;
+      opened++;
     }
+
+    spawnRemaining = Math.max(0, n - opened);
+    updateSpawnBar();
+
     document.getElementById("presetStatus").textContent =
-      opened < n
-        ? "Opened " + opened + "/" + n + " tabs (popup blocked for some)"
-        : "Opened " + opened + " tabs · #" + hash;
+      opened === 0
+        ? "All popups blocked — allow popups, then use Open next tab"
+        : opened < n
+          ? "Opened " + opened + "/" + n + " · click Open next tab for the rest"
+          : "Opened all " + opened + " tabs";
     document.getElementById("presetStatus").className =
-      opened ? "status on" : "status warn";
+      opened > 0 ? "status on" : "status warn";
+  });
+
+  document.getElementById("spawnNextBtn").addEventListener("click", () => {
+    openOneSpawnTab();
   });
 
   // Auto-start from URL hash after UI is ready (short delay for permission UX)
@@ -4254,7 +4358,7 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "25";
+  const BUILD_ID = "26";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
