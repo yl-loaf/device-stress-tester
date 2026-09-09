@@ -10,22 +10,23 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-  <title>Phone Stress Tester</title>
+  <title>Device Stress Tester</title>
   <!-- Bump ?v= when you deploy so browsers fetch fresh assets -->
-  <link rel="stylesheet" href="styles.css?v=20" />
+  <link rel="stylesheet" href="styles.css?v=23" />
 </head>
 <body>
   <div class="app">
     <header>
       <div class="header-row">
-        <h1>Phone Stress Tester</h1>
+        <h1>Device Stress Tester</h1>
         <button type="button" id="themeToggle" class="theme-btn" aria-label="Toggle light mode">Light</button>
+        <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
       </div>
-      <p class="subtitle">Battery &amp; hardware stress tools <span id="buildTag" class="build-tag">v20</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v23</span></p>
     </header>
 
     <!-- Preset profiles -->
-    <section class="card preset-card">
+    <section class="card preset-card card-span-all">
       <h2>Test profiles</h2>
       <div class="preset-btns">
         <button type="button" class="preset-btn" id="presetQuick">Quick Burst<br /><span>1 min</span></button>
@@ -35,11 +36,18 @@
       </div>
       <p class="status" id="presetStatus">Idle — pick a profile or use individual toggles</p>
       <button type="button" class="preset-abort" id="presetAbort" hidden>Abort profile</button>
-      <p class="hint">Quick: CPU + network. Endurance: CPU + GPU + storage + network. Torture: heavy load until abort. MAX (purple): almost everything except torch, void, audio, panel/ISP light — GPU starts last so permission prompts can appear.</p>
+      <div class="controls" style="margin-top:12px">
+        <label>
+          Open tabs with same profile <span id="multiTabValue">3</span>
+          <input type="range" id="multiTabSlider" min="1" max="10" value="3" step="1" />
+        </label>
+        <button type="button" class="export-btn" id="multiTabOpen">Open tabs</button>
+      </div>
+      <p class="hint">Quick / endurance / torture / max. URL hash: <code>#profile=torture&amp;duration=300</code> (duration in seconds, 0 = until abort). Multi-tab opens N windows with the same hash (browsers may block popups).</p>
     </section>
 
     <!-- Thermal / performance telemetry -->
-    <section class="card">
+    <section class="card card-span-all">
       <h2>Thermal throttle log</h2>
       <p class="status" id="throttleStatus">Not sampling</p>
       <div class="throttle-stats">
@@ -59,13 +67,13 @@
     </section>
 
     <!-- Scorecard (for screenshot) -->
-    <section class="card scorecard-card" id="scorecardCard" hidden>
+    <section class="card scorecard-card card-span-all" id="scorecardCard" hidden>
       <h2>Performance scorecard</h2>
       <pre id="scorecardText" class="scorecard-pre"></pre>
       <button type="button" class="export-btn" id="copyScorecard">Copy summary</button>
     </section>
 
-    <section class="card power-card">
+    <section class="card power-card card-span-all">
       <h2>Estimated Power Draw</h2>
       <div class="power-display">
         <span id="powerWatts">0.0</span><span class="unit">W</span>
@@ -306,6 +314,34 @@
       <p class="hint">Web NFC (NDEF). Works mainly on Android Chrome over HTTPS. Hold a tag near the phone while scanning.</p>
     </section>
 
+    <!-- Web Bluetooth -->
+    <section class="card">
+      <div class="card-header">
+        <h2>Web Bluetooth</h2>
+        <label class="switch">
+          <input type="checkbox" id="btToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="status" id="btStatus">Off</p>
+      <pre id="btLog" class="scorecard-pre" hidden></pre>
+      <p class="hint">Scans/connects via <code>navigator.bluetooth</code> (Chrome/Edge, HTTPS, user gesture). Lists services &amp; characteristics when the device allows. Not on iOS Safari.</p>
+    </section>
+
+    <!-- WebUSB -->
+    <section class="card">
+      <div class="card-header">
+        <h2>WebUSB</h2>
+        <label class="switch">
+          <input type="checkbox" id="usbToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="status" id="usbStatus">Off</p>
+      <pre id="usbLog" class="scorecard-pre" hidden></pre>
+      <p class="hint">Requests a USB device via <code>navigator.usb</code> and reads device/config descriptors. Chrome/Edge + HTTPS; many phones block host USB access.</p>
+    </section>
+
     <!-- RAM stress -->
     <section class="card">
       <div class="card-header">
@@ -474,9 +510,9 @@
       <p class="hint">Full-screen blank (black in dark mode, white in light). Remaining taps shown on screen. Tap 5× to close tab. ✕ exits mode only. Counter resets after 3s idle.</p>
     </section>
 
-    <footer>
-      <p>Open this page on your phone. Grant permissions when asked.</p>
-      <p class="small">GitHub Pages ready · No backend required</p>
+    <footer class="card-span-all">
+      <p>Works on phones and desktops. Grant permissions when asked. PC mode uses a multi-column layout.</p>
+      <p class="small">GitHub Pages ready · No backend required · Device Stress Tester</p>
     </footer>
   </div>
 
@@ -491,6 +527,6 @@
     <button type="button" id="panelCloseBtn" class="panel-close" aria-label="Exit panel test">×</button>
   </div>
 
-  <script src="app.js?v=20"></script>
+  <script src="app.js?v=23"></script>
 </body>
 </html>
