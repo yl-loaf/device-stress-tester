@@ -12,7 +12,7 @@
   <meta http-equiv="Expires" content="0" />
   <title>Device Stress Tester</title>
   <!-- Bump ?v= when you deploy so browsers fetch fresh assets -->
-  <link rel="stylesheet" href="styles.css?v=25" />
+  <link rel="stylesheet" href="styles.css?v=26" />
 </head>
 <body>
   <div class="app">
@@ -22,7 +22,7 @@
         <button type="button" id="themeToggle" class="theme-btn" aria-label="Toggle light mode">Light</button>
         <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
       </div>
-      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v25</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v26</span></p>
     </header>
 
     <!-- Preset profiles -->
@@ -43,7 +43,11 @@
         </label>
         <button type="button" class="export-btn" id="multiTabOpen">Open tabs</button>
       </div>
-      <p class="hint">Quick / endurance / torture / max. URL hash: <code>#profile=torture&amp;duration=300</code> (duration in seconds, 0 = until abort). Multi-tab opens N windows with the same hash (browsers may block popups).</p>
+      <div id="spawnBar" class="spawn-bar" hidden>
+        <p id="spawnBarText">Browser blocked extra tabs.</p>
+        <button type="button" class="export-btn" id="spawnNextBtn">Open next tab</button>
+      </div>
+      <p class="hint">Quick / endurance / torture / max. URL: <code>#profile=torture&amp;duration=300</code>. Multi-tab: browsers usually allow only <strong>one</strong> popup per click — use <strong>Open next tab</strong> repeatedly (or the bar on each new tab) to reach your count.</p>
     </section>
 
     <!-- Thermal / performance telemetry -->
@@ -634,6 +638,6 @@
     <canvas id="hdrCanvas" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
   </div>
 
-  <script src="app.js?v=25"></script>
+  <script src="app.js?v=26"></script>
 </body>
 </html>
