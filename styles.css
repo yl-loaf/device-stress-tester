@@ -55,6 +55,49 @@ html, body {
   padding-bottom: calc(40px + env(safe-area-inset-bottom));
 }
 
+/* PC multi-column mode */
+html.pc-mode .app {
+  max-width: min(1400px, 100%);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+  padding: 20px 20px 48px;
+}
+
+html.pc-mode .app > header,
+html.pc-mode .app > footer,
+html.pc-mode .app > .card-span-all {
+  grid-column: 1 / -1;
+}
+
+html.pc-mode .app > .card {
+  margin: 0;
+  height: 100%;
+}
+
+@media (min-width: 1100px) {
+  html.pc-mode .app {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1500px) {
+  html.pc-mode .app {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    max-width: 1600px;
+  }
+}
+
+html.pc-mode .theme-btn#pcModeToggle {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+html.pc-mode header h1 {
+  font-size: 1.7rem;
+}
+
 header {
   text-align: center;
   margin-bottom: 20px;
