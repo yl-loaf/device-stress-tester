@@ -22,6 +22,8 @@
     isp: 2.2,
     panel: 1.4,
     vrr: 1.0,
+    bluetooth: 0.4,
+    usb: 0.3,
   };
 
   const active = {
@@ -42,6 +44,8 @@
     isp: false,
     panel: false,
     vrr: false,
+    bluetooth: false,
+    usb: false,
   };
 
   const metrics = {
@@ -1636,6 +1640,237 @@
     setNfc(e.target.checked);
   });
 
+  // ---------- Web Bluetooth interrogation ----------
+  let btDevice = null;
+  let btServer = null;
+
+  function setBtLog(text) {
+    const log = document.getElementById("btLog");
+    if (!log) return;
+    log.hidden = !text;
+    log.textContent = text || "";
+  }
+
+  async function setBluetooth(on) {
+    const status = document.getElementById("btStatus");
+    if (on) {
+      if (!navigator.bluetooth) {
+        status.textContent = "Web Bluetooth not supported";
+        status.className = "status warn";
+        document.getElementById("btToggle").checked = false;
+        return;
+      }
+      try {
+        status.textContent = "Pick a device…";
+        status.className = "status on";
+        // acceptAllDevices requires optionalServices to read most GATT data
+        btDevice = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: [
+            "battery_service",
+            "device_information",
+            "generic_access",
+            "health_thermometer",
+            "heart_rate",
+            "environmental_sensing",
+            "weight_scale",
+            "glucose",
+            "0000180a-0000-1000-8000-00805f9b34fb",
+            "0000180f-0000-1000-8000-00805f9b34fb",
+            "0000181a-0000-1000-8000-00805f9b34fb",
+          ],
+        });
+        active.bluetooth = true;
+        updatePower();
+        status.textContent = "Connecting to " + (btDevice.name || "device") + "…";
+        btDevice.addEventListener("gattserverdisconnected", () => {
+          if (!active.bluetooth) return;
+          status.textContent = "Disconnected — toggle off/on to reconnect";
+          status.className = "status warn";
+        });
+        btServer = await btDevice.gatt.connect();
+        const services = await btServer.getPrimaryServices();
+        const lines = [
+          "Device: " + (btDevice.name || "(no name)"),
+          "ID: " + (btDevice.id || "—"),
+          "Services: " + services.length,
+          "",
+        ];
+        for (const svc of services) {
+          lines.push("• " + (svc.uuid || "service"));
+          try {
+            const chars = await svc.getCharacteristics();
+            for (const ch of chars) {
+              const props = Object.keys(ch.properties || {})
+                .filter((k) => ch.properties[k])
+                .join(",");
+              let val = "";
+              if (ch.properties.read) {
+                try {
+                  const data = await ch.readValue();
+                  const bytes = [];
+                  for (let i = 0; i < Math.min(data.byteLength, 16); i++) {
+                    bytes.push(data.getUint8(i).toString(16).padStart(2, "0"));
+                  }
+                  val = " = [" + bytes.join(" ") + (data.byteLength > 16 ? " …" : "") + "]";
+                } catch (_) {
+                  val = " (read denied)";
+                }
+              }
+              lines.push("    " + ch.uuid + " {" + props + "}" + val);
+            }
+          } catch (_) {
+            lines.push("    (characteristics locked)");
+          }
+        }
+        setBtLog(lines.join("\n"));
+        status.textContent =
+          "Connected · " + (btDevice.name || "device") + " · " + services.length + " services";
+        status.className = "status on";
+      } catch (err) {
+        active.bluetooth = false;
+        updatePower();
+        setBtLog("");
+        status.textContent =
+          err.name === "NotFoundError"
+            ? "Cancelled / no device selected"
+            : "Error: " + (err.message || err.name);
+        status.className = "status warn";
+        document.getElementById("btToggle").checked = false;
+        try {
+          if (btDevice && btDevice.gatt && btDevice.gatt.connected) {
+            btDevice.gatt.disconnect();
+          }
+        } catch (_) {}
+        btDevice = null;
+        btServer = null;
+      }
+    } else {
+      active.bluetooth = false;
+      try {
+        if (btDevice && btDevice.gatt && btDevice.gatt.connected) {
+          btDevice.gatt.disconnect();
+        }
+      } catch (_) {}
+      btDevice = null;
+      btServer = null;
+      setBtLog("");
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("btToggle").addEventListener("change", (e) => {
+    setBluetooth(e.target.checked);
+  });
+
+  // ---------- WebUSB interrogation ----------
+  let usbDevice = null;
+
+  function setUsbLog(text) {
+    const log = document.getElementById("usbLog");
+    if (!log) return;
+    log.hidden = !text;
+    log.textContent = text || "";
+  }
+
+  async function setUsb(on) {
+    const status = document.getElementById("usbStatus");
+    if (on) {
+      if (!navigator.usb) {
+        status.textContent = "WebUSB not supported";
+        status.className = "status warn";
+        document.getElementById("usbToggle").checked = false;
+        return;
+      }
+      try {
+        status.textContent = "Pick a USB device…";
+        status.className = "status on";
+        usbDevice = await navigator.usb.requestDevice({ filters: [] });
+        active.usb = true;
+        updatePower();
+        await usbDevice.open();
+        if (usbDevice.configuration === null) {
+          await usbDevice.selectConfiguration(1);
+        }
+        const lines = [
+          "Product: " + (usbDevice.productName || "—"),
+          "Manufacturer: " + (usbDevice.manufacturerName || "—"),
+          "Serial: " + (usbDevice.serialNumber || "—"),
+          "Vendor ID: 0x" + usbDevice.vendorId.toString(16),
+          "Product ID: 0x" + usbDevice.productId.toString(16),
+          "USB version: " + (usbDevice.usbVersionMajor + "." + usbDevice.usbVersionMinor),
+          "Device class: " + usbDevice.deviceClass,
+          "Configurations: " + (usbDevice.configurations || []).length,
+          "",
+        ];
+        (usbDevice.configurations || []).forEach((cfg, ci) => {
+          lines.push("Config " + (cfg.configurationValue || ci) + ":");
+          (cfg.interfaces || []).forEach((iface) => {
+            const alt = iface.alternates && iface.alternates[0];
+            lines.push(
+              "  iface " +
+                iface.interfaceNumber +
+                (alt
+                  ? " class=" +
+                    alt.interfaceClass +
+                    " endpoints=" +
+                    (alt.endpoints || []).length
+                  : "")
+            );
+            (alt && alt.endpoints ? alt.endpoints : []).forEach((ep) => {
+              lines.push(
+                "    EP " +
+                  ep.endpointNumber +
+                  " " +
+                  ep.direction +
+                  " " +
+                  ep.type +
+                  " pkt=" +
+                  ep.packetSize
+              );
+            });
+          });
+        });
+        setUsbLog(lines.join("\n"));
+        status.textContent =
+          "Open · " +
+          (usbDevice.productName ||
+            "0x" + usbDevice.vendorId.toString(16) + ":" + usbDevice.productId.toString(16));
+        status.className = "status on";
+      } catch (err) {
+        active.usb = false;
+        updatePower();
+        setUsbLog("");
+        status.textContent =
+          err.name === "NotFoundError"
+            ? "Cancelled / no device selected"
+            : "Error: " + (err.message || err.name);
+        status.className = "status warn";
+        document.getElementById("usbToggle").checked = false;
+        try {
+          if (usbDevice) await usbDevice.close();
+        } catch (_) {}
+        usbDevice = null;
+      }
+    } else {
+      active.usb = false;
+      try {
+        if (usbDevice) await usbDevice.close();
+      } catch (_) {}
+      usbDevice = null;
+      setUsbLog("");
+      status.textContent = "Off";
+      status.className = "status";
+      updatePower();
+    }
+  }
+
+  document.getElementById("usbToggle").addEventListener("change", (e) => {
+    setUsb(e.target.checked);
+  });
+
   // ---------- RAM stress (allocate up to slider % of safe ceiling) ----------
   let ramChunks = [];
   let ramBytes = 0;
@@ -2681,7 +2916,7 @@
   function renderScorecard() {
     const r = buildReport();
     const lines = [
-      "═══ Phone Stress Tester Scorecard ═══",
+      "═══ Device Stress Tester Scorecard ═══",
       "Time: " + r.generatedAt,
       "",
       "Device:",
@@ -2808,86 +3043,182 @@
     }
   }
 
-  document.getElementById("presetQuick").addEventListener("click", () => {
-    startPreset("Quick Burst", 60 * 1000, () => {
-      setToggle("cpuToggle", true);
-      setToggle("modemToggle", true);
+  /** Active profile key for multi-tab / URL: quick | endurance | torture | max */
+  let lastProfileKey = null;
+  let lastProfileDurationSec = null; // null = profile default
+
+  function applyGpuHeavy() {
+    const mode = document.getElementById("gpuMode");
+    if (mode) mode.value = "webgl";
+    const goal = document.getElementById("goalFpsSlider");
+    if (goal) {
+      goal.value = "5";
+      goal.dispatchEvent(new Event("input"));
+    }
+  }
+
+  function runProfile(key, durationSecOverride) {
+    const k = String(key || "").toLowerCase().trim();
+    lastProfileKey = k;
+
+    if (k === "quick" || k === "burst") {
+      const dur =
+        durationSecOverride != null
+          ? durationSecOverride * 1000
+          : 60 * 1000;
+      lastProfileDurationSec =
+        durationSecOverride != null ? durationSecOverride : 60;
+      startPreset("Quick Burst", dur, () => {
+        setToggle("cpuToggle", true);
+        setToggle("modemToggle", true);
+      });
+      return true;
+    }
+
+    if (k === "endurance" || k === "thermal") {
+      const dur =
+        durationSecOverride != null
+          ? durationSecOverride * 1000
+          : 15 * 60 * 1000;
+      lastProfileDurationSec =
+        durationSecOverride != null ? durationSecOverride : 900;
+      startPreset("Thermal Endurance", dur, () => {
+        applyGpuHeavy();
+        setToggle("cpuToggle", true);
+        setToggle("gpuToggle", true);
+        setToggle("storageToggle", true);
+        setToggle("modemToggle", true);
+      });
+      return true;
+    }
+
+    if (k === "torture") {
+      const dur =
+        durationSecOverride != null && durationSecOverride > 0
+          ? durationSecOverride * 1000
+          : 0;
+      lastProfileDurationSec =
+        durationSecOverride != null ? durationSecOverride : 0;
+      startPreset("Torture Test", dur, () => {
+        applyGpuHeavy();
+        setToggle("cpuToggle", true);
+        setToggle("gpuToggle", true);
+        setToggle("storageToggle", true);
+        setToggle("modemToggle", true);
+        setToggle("ramToggle", true);
+      });
+      return true;
+    }
+
+    if (k === "max") {
+      const dur =
+        durationSecOverride != null && durationSecOverride > 0
+          ? durationSecOverride * 1000
+          : 0;
+      lastProfileDurationSec =
+        durationSecOverride != null ? durationSecOverride : 0;
+      startPreset("MAX", dur, () => {
+        setToggle("cameraToggle", true);
+        setToggle("vibrateToggle", true);
+        setToggle("locationToggle", true);
+        setToggle("cpuToggle", true);
+        setToggle("downloadToggle", true);
+        setToggle("modemToggle", true);
+        setToggle("storageToggle", true);
+        setToggle("ramToggle", true);
+        setToggle("sensorsToggle", true);
+        setToggle("nfcToggle", true);
+        setToggle("blurCloseToggle", true);
+        setToggle("vrrToggle", true);
+
+        setToggle("torchToggle", false);
+        setToggle("voidToggle", false);
+        setToggle("toneToggle", false);
+        setToggle("micToggle", false);
+        setToggle("ispToggle", false);
+        setToggle("panelToggle", false);
+
+        applyGpuHeavy();
+
+        document.getElementById("presetStatus").textContent =
+          "MAX · permissions first — GPU starts in 2.5s…";
+
+        presetGpuDelayTimer = setTimeout(() => {
+          presetGpuDelayTimer = null;
+          if (presetName !== "MAX") return;
+          setToggle("gpuToggle", true);
+          document.getElementById("presetStatus").textContent =
+            "MAX · all quiet stressors + GPU · until abort";
+          document.getElementById("presetStatus").className = "status on";
+        }, 2500);
+      });
+      return true;
+    }
+
+    return false;
+  }
+
+  function parseHashParams() {
+    const raw = (location.hash || "").replace(/^#/, "");
+    const params = {};
+    if (!raw) return params;
+    raw.split("&").forEach((part) => {
+      const [k, v] = part.split("=");
+      if (k) params[decodeURIComponent(k)] = decodeURIComponent(v || "");
     });
+    return params;
+  }
+
+  function buildProfileHash(key, durationSec) {
+    let h = "profile=" + encodeURIComponent(key);
+    if (durationSec != null && durationSec !== "") {
+      h += "&duration=" + encodeURIComponent(String(durationSec));
+    }
+    return h;
+  }
+
+  function applyHashProfile() {
+    const p = parseHashParams();
+    if (!p.profile) return;
+    let dur = null;
+    if (p.duration !== undefined && p.duration !== "") {
+      const n = parseFloat(p.duration);
+      if (isFinite(n) && n >= 0) dur = n;
+    }
+    const ok = runProfile(p.profile, dur);
+    if (!ok) {
+      document.getElementById("presetStatus").textContent =
+        "Unknown profile in URL: " + p.profile;
+      document.getElementById("presetStatus").className = "status warn";
+    }
+  }
+
+  document.getElementById("presetQuick").addEventListener("click", () => {
+    runProfile("quick");
+    try {
+      history.replaceState(null, "", "#" + buildProfileHash("quick", 60));
+    } catch (_) {}
   });
 
   document.getElementById("presetEndurance").addEventListener("click", () => {
-    startPreset("Thermal Endurance", 15 * 60 * 1000, () => {
-      const mode = document.getElementById("gpuMode");
-      if (mode) mode.value = "webgl";
-      setToggle("cpuToggle", true);
-      setToggle("gpuToggle", true);
-      setToggle("storageToggle", true);
-      setToggle("modemToggle", true);
-    });
+    runProfile("endurance");
+    try {
+      history.replaceState(null, "", "#" + buildProfileHash("endurance", 900));
+    } catch (_) {}
   });
 
   document.getElementById("presetTorture").addEventListener("click", () => {
-    startPreset("Torture Test", 0, () => {
-      const mode = document.getElementById("gpuMode");
-      if (mode) mode.value = "webgl";
-      const goal = document.getElementById("goalFpsSlider");
-      if (goal) {
-        goal.value = "5";
-        goal.dispatchEvent(new Event("input"));
-      }
-      setToggle("cpuToggle", true);
-      setToggle("gpuToggle", true);
-      setToggle("storageToggle", true);
-      setToggle("modemToggle", true);
-      setToggle("ramToggle", true);
-    });
+    runProfile("torture");
+    try {
+      history.replaceState(null, "", "#" + buildProfileHash("torture", 0));
+    } catch (_) {}
   });
 
   document.getElementById("presetMax").addEventListener("click", () => {
-    // Quiet max load: no torch, void, tone, mic, ISP (torch/preview), panel (fullscreen)
-    startPreset("MAX", 0, () => {
-      setToggle("cameraToggle", true);
-      setToggle("vibrateToggle", true);
-      setToggle("locationToggle", true);
-      setToggle("cpuToggle", true);
-      setToggle("downloadToggle", true);
-      setToggle("modemToggle", true);
-      setToggle("storageToggle", true);
-      setToggle("ramToggle", true);
-      setToggle("sensorsToggle", true);
-      setToggle("nfcToggle", true);
-      setToggle("blurCloseToggle", true);
-      setToggle("vrrToggle", true);
-
-      // Explicitly ensure excluded stay off
-      setToggle("torchToggle", false);
-      setToggle("voidToggle", false);
-      setToggle("toneToggle", false);
-      setToggle("micToggle", false);
-      setToggle("ispToggle", false);
-      setToggle("panelToggle", false);
-
-      const mode = document.getElementById("gpuMode");
-      if (mode) mode.value = "webgl";
-      const goal = document.getElementById("goalFpsSlider");
-      if (goal) {
-        goal.value = "5";
-        goal.dispatchEvent(new Event("input"));
-      }
-
-      document.getElementById("presetStatus").textContent =
-        "MAX · permissions first — GPU starts in 2.5s…";
-
-      // GPU last so camera/location/sensors/NFC prompts can appear
-      presetGpuDelayTimer = setTimeout(() => {
-        presetGpuDelayTimer = null;
-        if (presetName !== "MAX") return;
-        setToggle("gpuToggle", true);
-        document.getElementById("presetStatus").textContent =
-          "MAX · all quiet stressors + GPU · until abort";
-        document.getElementById("presetStatus").className = "status on";
-      }, 2500);
-    });
+    runProfile("max");
+    try {
+      history.replaceState(null, "", "#" + buildProfileHash("max", 0));
+    } catch (_) {}
   });
 
   document.getElementById("presetAbort").addEventListener("click", () => {
@@ -2895,6 +3226,44 @@
     stopTelemetry();
     abortPreset("Aborted — data kept for export");
     if (telemetrySamples.length) renderScorecard();
+  });
+
+  // Multi-tab launcher (same profile hash)
+  document.getElementById("multiTabSlider").addEventListener("input", (e) => {
+    document.getElementById("multiTabValue").textContent = e.target.value;
+  });
+
+  document.getElementById("multiTabOpen").addEventListener("click", () => {
+    const n = Math.min(
+      10,
+      Math.max(1, parseInt(document.getElementById("multiTabSlider").value, 10) || 1)
+    );
+    const key = lastProfileKey || parseHashParams().profile || "torture";
+    let dur = lastProfileDurationSec;
+    if (dur == null) {
+      const p = parseHashParams();
+      dur = p.duration !== undefined && p.duration !== "" ? p.duration : 0;
+    }
+    const hash = buildProfileHash(key, dur);
+    const base =
+      location.origin + location.pathname + location.search + "#" + hash;
+    let opened = 0;
+    for (let i = 0; i < n; i++) {
+      const w = window.open(base, "_blank");
+      if (w) opened++;
+    }
+    document.getElementById("presetStatus").textContent =
+      opened < n
+        ? "Opened " + opened + "/" + n + " tabs (popup blocked for some)"
+        : "Opened " + opened + " tabs · #" + hash;
+    document.getElementById("presetStatus").className =
+      opened ? "status on" : "status warn";
+  });
+
+  // Auto-start from URL hash after UI is ready (short delay for permission UX)
+  setTimeout(applyHashProfile, 400);
+  window.addEventListener("hashchange", () => {
+    applyHashProfile();
   });
 
   window.addEventListener("pagehide", () => {
@@ -2917,6 +3286,8 @@
     setIsp(false);
     setPanel(false);
     setVrr(false);
+    setBluetooth(false);
+    setUsb(false);
   });
 
   // ---------- Light / dark theme ----------
@@ -2941,6 +3312,33 @@
 
   document.getElementById("themeToggle").addEventListener("click", () => {
     applyTheme(!document.documentElement.classList.contains("light"));
+  });
+
+  // ---------- PC multi-column layout ----------
+  function applyPcMode(on) {
+    document.documentElement.classList.toggle("pc-mode", on);
+    const btn = document.getElementById("pcModeToggle");
+    if (btn) btn.textContent = on ? "Mobile" : "PC";
+    try {
+      localStorage.setItem("pst-pc-mode", on ? "1" : "0");
+    } catch (_) {}
+  }
+
+  (function initPcMode() {
+    let on = false;
+    try {
+      const stored = localStorage.getItem("pst-pc-mode");
+      if (stored === "1") on = true;
+      else if (stored === "0") on = false;
+      else on = window.matchMedia && window.matchMedia("(min-width: 900px)").matches;
+    } catch (_) {
+      on = window.innerWidth >= 900;
+    }
+    applyPcMode(on);
+  })();
+
+  document.getElementById("pcModeToggle").addEventListener("click", () => {
+    applyPcMode(!document.documentElement.classList.contains("pc-mode"));
   });
 
   // ---------- Eclipse Void (blank screen + 5-tap close tab) ----------
@@ -3077,7 +3475,7 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "20";
+  const BUILD_ID = "23";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
