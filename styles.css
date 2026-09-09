@@ -475,6 +475,35 @@ html.light .preset-btn-max {
   cursor: pointer;
 }
 
+.spawn-bar {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--accent);
+  background: rgba(91, 140, 255, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spawn-bar[hidden] {
+  display: none !important;
+}
+
+.spawn-bar p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+#spawnNextBtn {
+  width: 100%;
+  border-color: var(--accent);
+  color: var(--accent);
+  font-size: 1rem;
+  padding: 12px;
+}
+
 .export-row {
   display: flex;
   flex-wrap: wrap;
