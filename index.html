@@ -11,8 +11,9 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>Device Stress Tester</title>
+  <link rel="icon" id="appFavicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%235b8cff'/%3E%3C/svg%3E" />
   <!-- Bump ?v= when you deploy so browsers fetch fresh assets -->
-  <link rel="stylesheet" href="styles.css?v=26" />
+  <link rel="stylesheet" href="styles.css?v=28" />
 </head>
 <body>
   <div class="app">
@@ -21,9 +22,59 @@
         <h1>Device Stress Tester</h1>
         <button type="button" id="themeToggle" class="theme-btn" aria-label="Toggle light mode">Light</button>
         <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
+        <button type="button" id="stealthToggle" class="theme-btn" aria-label="Toggle stealth mode">Stealth</button>
       </div>
-      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v26</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v28</span></p>
     </header>
+
+    <!-- Stealth / keep-alive controls -->
+    <section class="card card-span-all" id="stealthCard">
+      <h2>Stealth &amp; keep-alive</h2>
+      <div class="controls">
+        <label>
+          Stealth layout
+          <select id="stealthLayout">
+            <option value="blank">Blank page</option>
+            <option value="docs">Documentation</option>
+            <option value="terminal">Terminal</option>
+          </select>
+        </label>
+        <label>
+          Tab title
+          <select id="stealthTitle">
+            <option value="Documentation">Documentation</option>
+            <option value="Blank Page">Blank Page</option>
+            <option value="Notes">Notes</option>
+            <option value="about:blank">about:blank</option>
+            <option value="Inbox">Inbox</option>
+          </select>
+        </label>
+      </div>
+      <div class="controls" style="margin-top:8px">
+        <label>
+          Optional exit password <span style="font-weight:400;color:var(--muted)">(this session only)</span>
+          <input type="password" id="stealthPassword" placeholder="Leave empty for none" autocomplete="new-password" />
+        </label>
+        <p class="status" id="stealthPassStatus" style="margin:4px 0 0">No password set</p>
+      </div>
+      <div class="card-header" style="margin-top:8px">
+        <span>Stealth tab (title + gray favicon)</span>
+        <label class="switch">
+          <input type="checkbox" id="stealthTabToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="card-header">
+        <span>Audio keep-alive (anti-throttle)</span>
+        <label class="switch">
+          <input type="checkbox" id="keepAliveToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="status" id="keepAliveStatus">Off</p>
+      <p class="hint">Optional password locks exiting stealth for this tab session only (cleared on refresh/close). Esc or triple-tap top-left still request exit. Keep-alive uses silent Web Audio against background throttling.</p>
+    </section>
+
 
     <!-- Preset profiles -->
     <section class="card preset-card card-span-all">
@@ -638,6 +689,41 @@
     <canvas id="hdrCanvas" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
   </div>
 
-  <script src="app.js?v=26"></script>
+  <!-- Stealth cover UI -->
+  <div id="stealthCover" class="stealth-cover" hidden>
+    <div id="stealthBlank" class="stealth-panel stealth-blank" hidden></div>
+    <div id="stealthDocs" class="stealth-panel stealth-docs" hidden>
+      <article>
+        <h1>Product documentation</h1>
+        <p class="stealth-meta">Last updated · Internal reference</p>
+        <h2>1. Overview</h2>
+        <p>This document describes the standard operating procedures for the internal knowledge base. Sections below summarize configuration, access control, and revision history for team use.</p>
+        <h2>2. Getting started</h2>
+        <p>Ensure you have the appropriate permissions before modifying shared resources. All changes should be reviewed according to the change-management policy.</p>
+        <h2>3. Reference</h2>
+        <p>For detailed API contracts and schema definitions, consult the architecture appendix. Contact the platform team if endpoints return unexpected status codes.</p>
+        <h2>4. Appendix</h2>
+        <p>Versioning follows semantic guidelines. Deprecated fields remain available for one release cycle before removal.</p>
+      </article>
+    </div>
+    <div id="stealthTerminal" class="stealth-panel stealth-terminal" hidden>
+      <pre id="stealthTermBody">$ session ready
+$ _</pre>
+    </div>
+    <button type="button" id="stealthExitHint" class="stealth-exit-hint" title="Exit stealth">·</button>
+    <div id="stealthUnlock" class="stealth-unlock" hidden>
+      <div class="stealth-unlock-box">
+        <p>Enter password to exit stealth</p>
+        <input type="password" id="stealthUnlockInput" autocomplete="current-password" />
+        <p id="stealthUnlockErr" class="stealth-unlock-err" hidden>Wrong password</p>
+        <div class="stealth-unlock-actions">
+          <button type="button" id="stealthUnlockCancel">Cancel</button>
+          <button type="button" id="stealthUnlockSubmit">Unlock</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js?v=28"></script>
 </body>
 </html>
