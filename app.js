@@ -4171,6 +4171,8 @@
     setZeroGc(false);
     setHdr(false);
     setAudioDsp(false);
+    setKeepAlive(false);
+    setStealthLayout(false);
   });
 
   // ---------- Light / dark theme ----------
@@ -4223,6 +4225,337 @@
   document.getElementById("pcModeToggle").addEventListener("click", () => {
     applyPcMode(!document.documentElement.classList.contains("pc-mode"));
   });
+
+  // ---------- Stealth UI + neutral tab + audio keep-alive ----------
+  const REAL_TITLE = document.title;
+  const REAL_FAVICON =
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%235b8cff'/%3E%3C/svg%3E";
+  const STEALTH_FAVICON =
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%239ca3af'/%3E%3C/svg%3E";
+
+  let stealthLayoutOn = false;
+  let stealthTabOn = false;
+  let stealthSessionPassword = ""; // session-only; cleared on refresh
+
+  let stealthExitTaps = 0;
+  let stealthExitTimer = null;
+  let keepAliveCtx = null;
+  let keepAliveOsc = null;
+  let keepAliveGain = null;
+  let termTimer = null;
+
+  function setFavicon(href) {
+    let link = document.getElementById("appFavicon");
+    if (!link) {
+      link = document.createElement("link");
+      link.id = "appFavicon";
+      link.rel = "icon";
+      document.head.appendChild(link);
+    }
+    link.href = href;
+  }
+
+  function applyStealthTab(on) {
+    stealthTabOn = on;
+    const titleSel = document.getElementById("stealthTitle");
+    if (on) {
+      document.title = (titleSel && titleSel.value) || "Documentation";
+      setFavicon(STEALTH_FAVICON);
+    } else {
+      document.title = REAL_TITLE;
+      setFavicon(REAL_FAVICON);
+    }
+    try {
+      localStorage.setItem("pst-stealth-tab", on ? "1" : "0");
+    } catch (_) {}
+  }
+
+  function showStealthPanel(kind) {
+    ["stealthBlank", "stealthDocs", "stealthTerminal"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.hidden = true;
+    });
+    if (kind === "docs") document.getElementById("stealthDocs").hidden = false;
+    else if (kind === "terminal") {
+      document.getElementById("stealthTerminal").hidden = false;
+      startTermScroll();
+    } else {
+      stopTermScroll();
+      document.getElementById("stealthBlank").hidden = false;
+    }
+  }
+
+  function startTermScroll() {
+    stopTermScroll();
+    const pre = document.getElementById("stealthTermBody");
+    if (!pre) return;
+    let lines = ["$ session ready"];
+    const cmds = [
+      "ls -la",
+      "cat /etc/hostname",
+      "uptime",
+      "df -h",
+      "ping -c 1 10.0.0.1",
+      "echo ok",
+    ];
+    termTimer = setInterval(() => {
+      if (!stealthLayoutOn) return;
+      lines.push("$ " + cmds[Math.floor(Math.random() * cmds.length)]);
+      lines.push("  done");
+      if (lines.length > 40) lines = lines.slice(-30);
+      pre.textContent = lines.join("\n") + "\n$ _";
+    }, 2200);
+  }
+
+  function stopTermScroll() {
+    if (termTimer) {
+      clearInterval(termTimer);
+      termTimer = null;
+    }
+  }
+
+  function updateStealthPassStatus() {
+    const el = document.getElementById("stealthPassStatus");
+    if (!el) return;
+    if (stealthSessionPassword) {
+      el.textContent = "Password set for this session (clears on refresh)";
+      el.className = "status on";
+    } else {
+      el.textContent = "No password set";
+      el.className = "status";
+    }
+  }
+
+  function syncStealthPasswordFromInput() {
+    const input = document.getElementById("stealthPassword");
+    stealthSessionPassword = (input && input.value) ? input.value : "";
+    updateStealthPassStatus();
+  }
+
+  function hideStealthUnlock() {
+    const box = document.getElementById("stealthUnlock");
+    if (box) box.hidden = true;
+    const err = document.getElementById("stealthUnlockErr");
+    if (err) err.hidden = true;
+    const inp = document.getElementById("stealthUnlockInput");
+    if (inp) inp.value = "";
+  }
+
+  function requestStealthExit() {
+    if (!stealthLayoutOn) return;
+    syncStealthPasswordFromInput();
+    if (!stealthSessionPassword) {
+      setStealthLayout(false);
+      return;
+    }
+    const box = document.getElementById("stealthUnlock");
+    if (box) box.hidden = false;
+    const inp = document.getElementById("stealthUnlockInput");
+    if (inp) {
+      inp.value = "";
+      setTimeout(() => inp.focus(), 50);
+    }
+  }
+
+  function tryStealthUnlock() {
+    const inp = document.getElementById("stealthUnlockInput");
+    const err = document.getElementById("stealthUnlockErr");
+    const val = inp ? inp.value : "";
+    if (val === stealthSessionPassword) {
+      hideStealthUnlock();
+      setStealthLayout(false);
+    } else {
+      if (err) err.hidden = false;
+      if (inp) {
+        inp.value = "";
+        inp.focus();
+      }
+    }
+  }
+
+  function setStealthLayout(on) {
+    const cover = document.getElementById("stealthCover");
+    const btn = document.getElementById("stealthToggle");
+    if (!cover) return;
+    if (on) {
+      syncStealthPasswordFromInput();
+      stealthLayoutOn = true;
+      const kind = document.getElementById("stealthLayout")?.value || "blank";
+      showStealthPanel(kind);
+      cover.hidden = false;
+      hideStealthUnlock();
+      document.documentElement.classList.add("stealth-on");
+      if (btn) btn.textContent = "Exit stealth";
+      const tabToggle = document.getElementById("stealthTabToggle");
+      if (tabToggle && !tabToggle.checked) {
+        tabToggle.checked = true;
+        applyStealthTab(true);
+      } else if (stealthTabOn) {
+        applyStealthTab(true);
+      }
+    } else {
+      stealthLayoutOn = false;
+      cover.hidden = true;
+      hideStealthUnlock();
+      stopTermScroll();
+      document.documentElement.classList.remove("stealth-on");
+      if (btn) btn.textContent = "Stealth";
+      stealthExitTaps = 0;
+    }
+    // Do not persist layout or password across sessions
+  }
+
+  function resumeKeepAlive() {
+    if (keepAliveCtx && keepAliveCtx.state === "suspended") {
+      keepAliveCtx.resume().catch(() => {});
+    }
+  }
+
+  function setKeepAlive(on) {
+    const status = document.getElementById("keepAliveStatus");
+    if (on) {
+      try {
+        if (keepAliveCtx) {
+          try { keepAliveOsc?.stop(); keepAliveCtx.close(); } catch (_) {}
+        }
+        keepAliveCtx = new (window.AudioContext || window.webkitAudioContext)();
+        keepAliveOsc = keepAliveCtx.createOscillator();
+        keepAliveGain = keepAliveCtx.createGain();
+        keepAliveGain.gain.value = 0.00001;
+        keepAliveOsc.frequency.value = 20;
+        keepAliveOsc.connect(keepAliveGain);
+        keepAliveGain.connect(keepAliveCtx.destination);
+        keepAliveOsc.start();
+        if (keepAliveCtx.state === "suspended") {
+          keepAliveCtx.resume().catch(() => {});
+        }
+        if (status) {
+          status.textContent = "Silent audio keep-alive running";
+          status.className = "status on";
+        }
+        document.addEventListener("visibilitychange", resumeKeepAlive);
+      } catch (err) {
+        if (status) {
+          status.textContent = "Keep-alive failed: " + (err.message || err);
+          status.className = "status warn";
+        }
+        const t = document.getElementById("keepAliveToggle");
+        if (t) t.checked = false;
+        return;
+      }
+    } else {
+      document.removeEventListener("visibilitychange", resumeKeepAlive);
+      try {
+        keepAliveOsc?.stop();
+        keepAliveOsc?.disconnect();
+        keepAliveGain?.disconnect();
+        keepAliveCtx?.close();
+      } catch (_) {}
+      keepAliveOsc = null;
+      keepAliveGain = null;
+      keepAliveCtx = null;
+      if (status) {
+        status.textContent = "Off";
+        status.className = "status";
+      }
+    }
+    try {
+      localStorage.setItem("pst-keep-alive", on ? "1" : "0");
+    } catch (_) {}
+  }
+
+  const stealthBtn = document.getElementById("stealthToggle");
+  if (stealthBtn) {
+    stealthBtn.addEventListener("click", () => {
+      if (stealthLayoutOn) requestStealthExit();
+      else setStealthLayout(true);
+    });
+  }
+
+  const stealthPassInput = document.getElementById("stealthPassword");
+  if (stealthPassInput) {
+    stealthPassInput.addEventListener("input", syncStealthPasswordFromInput);
+    stealthPassInput.addEventListener("change", syncStealthPasswordFromInput);
+  }
+
+  const unlockSubmit = document.getElementById("stealthUnlockSubmit");
+  if (unlockSubmit) unlockSubmit.addEventListener("click", tryStealthUnlock);
+  const unlockCancel = document.getElementById("stealthUnlockCancel");
+  if (unlockCancel) unlockCancel.addEventListener("click", hideStealthUnlock);
+  const unlockInput = document.getElementById("stealthUnlockInput");
+  if (unlockInput) {
+    unlockInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") tryStealthUnlock();
+      if (e.key === "Escape") hideStealthUnlock();
+    });
+  }
+
+  const stealthTabEl = document.getElementById("stealthTabToggle");
+  if (stealthTabEl) {
+    stealthTabEl.addEventListener("change", (e) => {
+      applyStealthTab(e.target.checked);
+    });
+  }
+
+  const stealthTitleEl = document.getElementById("stealthTitle");
+  if (stealthTitleEl) {
+    stealthTitleEl.addEventListener("change", () => {
+      if (stealthTabOn) applyStealthTab(true);
+    });
+  }
+
+  const stealthLayoutEl = document.getElementById("stealthLayout");
+  if (stealthLayoutEl) {
+    stealthLayoutEl.addEventListener("change", () => {
+      if (stealthLayoutOn) showStealthPanel(stealthLayoutEl.value);
+    });
+  }
+
+  const keepAliveEl = document.getElementById("keepAliveToggle");
+  if (keepAliveEl) {
+    keepAliveEl.addEventListener("change", (e) => {
+      setKeepAlive(e.target.checked);
+    });
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && stealthLayoutOn) {
+      const unlock = document.getElementById("stealthUnlock");
+      if (unlock && !unlock.hidden) hideStealthUnlock();
+      else requestStealthExit();
+    }
+  });
+
+  const exitHint = document.getElementById("stealthExitHint");
+  if (exitHint) {
+    exitHint.addEventListener("click", (e) => {
+      e.stopPropagation();
+      stealthExitTaps++;
+      if (stealthExitTimer) clearTimeout(stealthExitTimer);
+      stealthExitTimer = setTimeout(() => {
+        stealthExitTaps = 0;
+      }, 2000);
+      if (stealthExitTaps >= 3) {
+        stealthExitTaps = 0;
+        requestStealthExit();
+      }
+    });
+  }
+
+  (function initStealthPrefs() {
+    try {
+      if (localStorage.getItem("pst-stealth-tab") === "1") {
+        const t = document.getElementById("stealthTabToggle");
+        if (t) t.checked = true;
+        applyStealthTab(true);
+      }
+      if (localStorage.getItem("pst-keep-alive") === "1") {
+        const t = document.getElementById("keepAliveToggle");
+        if (t) t.checked = true;
+        setTimeout(() => setKeepAlive(true), 500);
+      }
+    } catch (_) {}
+  })();
 
   // ---------- Eclipse Void (blank screen + 5-tap close tab) ----------
   const VOID_TAPS_NEEDED = 5;
@@ -4358,7 +4691,7 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "26";
+  const BUILD_ID = "28";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
