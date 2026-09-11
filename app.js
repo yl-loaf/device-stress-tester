@@ -4039,11 +4039,17 @@
     const sp = stealthSessionPassword
       ? await encryptStealthPassword(stealthSessionPassword)
       : "";
-    return buildProfileHash(null, null, null, {
+    const base = buildProfileHash(null, null, null, {
       layout,
       sp: sp || undefined,
       tab: tabTitle,
     });
+    // Include active feature state so reload restores load behind the cover
+    const feats = collectFeatureParams();
+    const extra = Object.keys(feats)
+      .map((k) => k + "=" + encodeURIComponent(feats[k]))
+      .join("&");
+    return extra ? base + (base ? "&" : "") + extra : base;
   }
 
   function profileUrl(key, durationSec, spawnLeft) {
@@ -4120,9 +4126,178 @@
     return false;
   }
 
+
+  // ---------- Full feature URL state ----------
+  // Compact params: f_torch=1, f_cpu=1, f_cpuw=4, f_goal=5, ...
+  const FEATURE_PARAMS = [
+    { p: "f_torch", id: "torchToggle", kind: "toggle" },
+    { p: "f_cam", id: "cameraToggle", kind: "toggle" },
+    { p: "f_isp", id: "ispToggle", kind: "toggle" },
+    { p: "f_ispf", id: "ispFilter", kind: "select" },
+    { p: "f_vib", id: "vibrateToggle", kind: "toggle" },
+    { p: "f_loc", id: "locationToggle", kind: "toggle" },
+    { p: "f_cpu", id: "cpuToggle", kind: "toggle" },
+    { p: "f_cpuw", id: "cpuWorkersSlider", kind: "range", label: "cpuWorkersValue" },
+    { p: "f_dl", id: "downloadToggle", kind: "toggle" },
+    { p: "f_dld", id: "downloadDuration", kind: "number" },
+    { p: "f_gpu", id: "gpuToggle", kind: "toggle" },
+    { p: "f_gpum", id: "gpuMode", kind: "select" },
+    { p: "f_goal", id: "goalFpsSlider", kind: "range", label: "goalFpsValue", label2: "goalFpsLabel" },
+    { p: "f_mic", id: "micToggle", kind: "toggle" },
+    { p: "f_tone", id: "toneToggle", kind: "toggle" },
+    { p: "f_freq", id: "freqSlider", kind: "range" },
+    { p: "f_vol", id: "volSlider", kind: "range" },
+    { p: "f_nfc", id: "nfcToggle", kind: "toggle" },
+    { p: "f_bt", id: "btToggle", kind: "toggle" },
+    { p: "f_usb", id: "usbToggle", kind: "toggle" },
+    { p: "f_ram", id: "ramToggle", kind: "toggle" },
+    { p: "f_ramm", id: "ramMaxSlider", kind: "range", label: "ramMaxValue" },
+    { p: "f_sens", id: "sensorsToggle", kind: "toggle" },
+    { p: "f_panel", id: "panelToggle", kind: "toggle" },
+    { p: "f_panp", id: "panelPattern", kind: "select" },
+    { p: "f_vrr", id: "vrrToggle", kind: "toggle" },
+    { p: "f_stor", id: "storageToggle", kind: "toggle" },
+    { p: "f_storp", id: "storagePattern", kind: "select" },
+    { p: "f_modem", id: "modemToggle", kind: "toggle" },
+    { p: "f_mods", id: "modemStreamsSlider", kind: "range", label: "modemStreamsValue" },
+    { p: "f_wgc", id: "webgpuComputeToggle", kind: "toggle" },
+    { p: "f_wgd", id: "webgpuDrawToggle", kind: "toggle" },
+    { p: "f_wasm", id: "wasmToggle", kind: "toggle" },
+    { p: "f_ai", id: "aiToggle", kind: "toggle" },
+    { p: "f_zgc", id: "zeroGcToggle", kind: "toggle" },
+    { p: "f_hdr", id: "hdrToggle", kind: "toggle" },
+    { p: "f_adsp", id: "audioDspToggle", kind: "toggle" },
+    { p: "f_adspc", id: "audioDspCount", kind: "range", label: "audioDspCountValue" },
+    { p: "f_blur", id: "blurCloseToggle", kind: "toggle" },
+    { p: "f_void", id: "voidToggle", kind: "toggle" },
+    { p: "f_ka", id: "keepAliveToggle", kind: "toggle" },
+    { p: "f_stabon", id: "stealthTabToggle", kind: "toggle" },
+  ];
+
+  // Order: apply settings first, then enable toggles (GPU-ish last)
+  const TOGGLE_APPLY_ORDER = [
+    "cpuWorkersSlider", "goalFpsSlider", "ramMaxSlider", "modemStreamsSlider",
+    "audioDspCount", "freqSlider", "volSlider", "downloadDuration",
+    "ispFilter", "gpuMode", "panelPattern", "storagePattern",
+    "cpuToggle", "downloadToggle", "modemToggle", "storageToggle", "ramToggle",
+    "cameraToggle", "vibrateToggle", "locationToggle", "sensorsToggle",
+    "nfcToggle", "vrrToggle", "wasmToggle", "zeroGcToggle", "audioDspToggle",
+    "keepAliveToggle", "stealthTabToggle", "blurCloseToggle",
+    "micToggle", "toneToggle", "btToggle", "usbToggle",
+    "torchToggle", "ispToggle", "panelToggle", "voidToggle", "hdrToggle",
+    "gpuToggle", "webgpuComputeToggle", "webgpuDrawToggle", "aiToggle",
+  ];
+
+  function collectFeatureParams() {
+    const out = {};
+    FEATURE_PARAMS.forEach((f) => {
+      const el = document.getElementById(f.id);
+      if (!el) return;
+      if (f.kind === "toggle") {
+        if (el.checked) out[f.p] = "1";
+      } else if (f.kind === "range" || f.kind === "number") {
+        out[f.p] = String(el.value);
+      } else if (f.kind === "select") {
+        out[f.p] = String(el.value);
+      }
+    });
+    return out;
+  }
+
+  function setControlValue(f, raw) {
+    const el = document.getElementById(f.id);
+    if (!el || raw == null || raw === "") return;
+    if (f.kind === "toggle") {
+      const on = raw === "1" || raw === "true" || raw === "yes";
+      if (el.checked !== on) {
+        el.checked = on;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    } else if (f.kind === "range" || f.kind === "number") {
+      el.value = raw;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      if (f.label) {
+        const lab = document.getElementById(f.label);
+        if (lab) lab.textContent = raw;
+      }
+      if (f.label2) {
+        const lab = document.getElementById(f.label2);
+        if (lab) lab.textContent = raw;
+      }
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    } else if (f.kind === "select") {
+      el.value = raw;
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+
+  function applyFeatureParams(p) {
+    if (!p) return;
+    const byId = {};
+    FEATURE_PARAMS.forEach((f) => {
+      if (p[f.p] !== undefined) byId[f.id] = { f, raw: p[f.p] };
+    });
+    // Non-toggles first
+    FEATURE_PARAMS.forEach((f) => {
+      if (f.kind === "toggle") return;
+      if (byId[f.id]) setControlValue(f, byId[f.id].raw);
+    });
+    // Toggles in safe order
+    TOGGLE_APPLY_ORDER.forEach((id) => {
+      if (byId[id] && byId[id].f.kind === "toggle") {
+        setControlValue(byId[id].f, byId[id].raw);
+      }
+    });
+    // Any remaining toggles
+    FEATURE_PARAMS.forEach((f) => {
+      if (f.kind !== "toggle") return;
+      if (!TOGGLE_APPLY_ORDER.includes(f.id) && byId[f.id]) {
+        setControlValue(f, byId[f.id].raw);
+      }
+    });
+  }
+
+  async function buildFullStateHash() {
+    const parts = [];
+    const { key, dur } = getProfileKeyAndDuration();
+    if (lastProfileKey || parseHashParams().profile) {
+      parts.push("profile=" + encodeURIComponent(key));
+      if (dur != null && dur !== "") {
+        parts.push("duration=" + encodeURIComponent(String(dur)));
+      }
+    }
+    const feats = collectFeatureParams();
+    Object.keys(feats).forEach((k) => {
+      parts.push(k + "=" + encodeURIComponent(feats[k]));
+    });
+    // Stealth
+    const layout = document.getElementById("stealthLayout")?.value;
+    const tabTitle = document.getElementById("stealthTitle")?.value;
+    if (stealthLayoutOn || layout) {
+      // only include stealth key if layout is active OR user is copying stealth-aware full link while in stealth
+    }
+    if (stealthLayoutOn) {
+      parts.push("stealth=" + encodeURIComponent(layout || "blank"));
+      if (tabTitle) parts.push("stab=" + encodeURIComponent(tabTitle));
+      syncStealthPasswordFromInput();
+      if (stealthSessionPassword) {
+        const sp = await encryptStealthPassword(stealthSessionPassword);
+        if (sp) parts.push("sp=" + encodeURIComponent(sp));
+      }
+    }
+    return parts.join("&");
+  }
+
   async function applyStealthFromHash(p) {
     if (!p) p = parseHashParams();
-    if (!p.stealth && !p.sp && !p.stab) return;
+    if (!p.stealth && !p.sp && !p.stab) {
+      document.documentElement.classList.remove(
+        "boot-stealth",
+        "boot-stealth-docs",
+        "boot-stealth-terminal"
+      );
+      return;
+    }
 
     if (p.stealth) {
       const layoutEl = document.getElementById("stealthLayout");
@@ -4134,9 +4309,13 @@
     if (p.stab) {
       const titleEl = document.getElementById("stealthTitle");
       if (titleEl) {
-        // use value if option exists, else still set title via stealth tab
         const opts = [...titleEl.options].map((o) => o.value);
         if (opts.includes(p.stab)) titleEl.value = p.stab;
+      }
+      const tabToggle = document.getElementById("stealthTabToggle");
+      if (tabToggle) {
+        tabToggle.checked = true;
+        applyStealthTab(true);
       }
     }
     if (p.sp) {
@@ -4148,14 +4327,29 @@
         updateStealthPassStatus();
       }
     }
-    // Enter stealth UI from link
     if (p.stealth) {
       setStealthLayout(true);
+      // Real cover is up — safe to drop the boot blank
+      requestAnimationFrame(() => {
+        document.documentElement.classList.remove(
+          "boot-stealth",
+          "boot-stealth-docs",
+          "boot-stealth-terminal"
+        );
+      });
+    } else {
+      document.documentElement.classList.remove(
+        "boot-stealth",
+        "boot-stealth-docs",
+        "boot-stealth-terminal"
+      );
     }
   }
 
   async function applyHashProfile() {
     const p = parseHashParams();
+    const hasStealth = !!p.stealth;
+
     if (p.spawn) {
       const s = parseInt(p.spawn, 10);
       if (isFinite(s) && s > 0) {
@@ -4163,20 +4357,42 @@
         updateSpawnBar();
       }
     }
+
+    // Apply feature extents/toggles from URL (behind stealth cover if present)
+    applyFeatureParams(p);
+
     if (p.profile) {
       let dur = null;
       if (p.duration !== undefined && p.duration !== "") {
         const n = parseFloat(p.duration);
         if (isFinite(n) && n >= 0) dur = n;
       }
-      const ok = runProfile(p.profile, dur);
-      if (!ok) {
-        document.getElementById("presetStatus").textContent =
-          "Unknown profile in URL: " + p.profile;
-        document.getElementById("presetStatus").className = "status warn";
+      // Profile may toggle many features; feature params already applied.
+      // Still run profile only if no explicit feature flags (or always for presets)
+      const hasFeatureFlags = FEATURE_PARAMS.some((f) => p[f.p] !== undefined);
+      if (!hasFeatureFlags) {
+        const ok = runProfile(p.profile, dur);
+        if (!ok) {
+          document.getElementById("presetStatus").textContent =
+            "Unknown profile in URL: " + p.profile;
+          document.getElementById("presetStatus").className = "status warn";
+        }
+      } else {
+        lastProfileKey = p.profile;
+        if (dur != null) lastProfileDurationSec = dur;
+        startTelemetry();
       }
     }
+
     await applyStealthFromHash(p);
+
+    if (!hasStealth) {
+      document.documentElement.classList.remove(
+        "boot-stealth",
+        "boot-stealth-docs",
+        "boot-stealth-terminal"
+      );
+    }
   }
 
   document.getElementById("presetQuick").addEventListener("click", () => {
@@ -4256,7 +4472,15 @@
   });
 
   // Auto-start from URL hash after UI is ready (short delay for permission UX)
-  setTimeout(applyHashProfile, 400);
+  setTimeout(applyHashProfile, 50);
+  // If no stealth in hash, clear any stray boot class
+  if (!/(?:^|&)stealth=/.test((location.hash || "").replace(/^#/, ""))) {
+    document.documentElement.classList.remove(
+      "boot-stealth",
+      "boot-stealth-docs",
+      "boot-stealth-terminal"
+    );
+  }
   window.addEventListener("hashchange", () => {
     applyHashProfile();
   });
@@ -4621,6 +4845,32 @@
     });
   }
 
+  const copyFullLinkBtn = document.getElementById("copyFullLink");
+  if (copyFullLinkBtn) {
+    copyFullLinkBtn.addEventListener("click", async () => {
+      try {
+        // Include stealth if currently active
+        const hash = await buildFullStateHash();
+        // If not in stealth but user wants features only, still fine
+        const url =
+          location.origin + location.pathname + location.search + (hash ? "#" + hash : "");
+        try {
+          if (hash) history.replaceState(null, "", "#" + hash);
+        } catch (_) {}
+        await navigator.clipboard.writeText(url);
+        copyFullLinkBtn.textContent = "Copied full state!";
+        setTimeout(() => {
+          copyFullLinkBtn.textContent = "Copy full state link";
+        }, 1500);
+      } catch (err) {
+        copyFullLinkBtn.textContent = "Copy failed";
+        setTimeout(() => {
+          copyFullLinkBtn.textContent = "Copy full state link";
+        }, 1500);
+      }
+    });
+  }
+
   const unlockSubmit = document.getElementById("stealthUnlockSubmit");
   if (unlockSubmit) unlockSubmit.addEventListener("click", tryStealthUnlock);
   const unlockCancel = document.getElementById("stealthUnlockCancel");
@@ -4835,7 +5085,7 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "30";
+  const BUILD_ID = "31";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
