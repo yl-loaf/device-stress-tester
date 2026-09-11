@@ -3930,6 +3930,74 @@
     return false;
   }
 
+  // ---------- Stealth link encoding (AES-GCM, client-side key) ----------
+  // Password in the URL is encrypted, not plain text. The key lives in this
+  // script (anyone with the source can decrypt). Cleared from memory on refresh.
+  const STEALTH_LINK_KEY_MATERIAL = "dst-stealth-v1-link-key-9f3a";
+
+  async function stealthCryptoKey() {
+    const enc = new TextEncoder();
+    const base = await crypto.subtle.digest(
+      "SHA-256",
+      enc.encode(STEALTH_LINK_KEY_MATERIAL)
+    );
+    return crypto.subtle.importKey("raw", base, { name: "AES-GCM" }, false, [
+      "encrypt",
+      "decrypt",
+    ]);
+  }
+
+  function b64urlFromBuf(buf) {
+    const bytes = new Uint8Array(buf);
+    let s = "";
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  function bufFromB64url(str) {
+    const pad = str.length % 4 === 0 ? "" : "=".repeat(4 - (str.length % 4));
+    const b64 = (str + pad).replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out.buffer;
+  }
+
+  async function encryptStealthPassword(plain) {
+    if (!plain) return "";
+    const key = await stealthCryptoKey();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv },
+      key,
+      new TextEncoder().encode(plain)
+    );
+    // iv (12) + ciphertext
+    const packed = new Uint8Array(iv.length + ct.byteLength);
+    packed.set(iv, 0);
+    packed.set(new Uint8Array(ct), iv.length);
+    return b64urlFromBuf(packed.buffer);
+  }
+
+  async function decryptStealthPassword(token) {
+    if (!token) return "";
+    try {
+      const packed = new Uint8Array(bufFromB64url(token));
+      if (packed.length < 13) return "";
+      const iv = packed.slice(0, 12);
+      const data = packed.slice(12);
+      const key = await stealthCryptoKey();
+      const pt = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv },
+        key,
+        data
+      );
+      return new TextDecoder().decode(pt);
+    } catch (_) {
+      return "";
+    }
+  }
+
   function parseHashParams() {
     const raw = (location.hash || "").replace(/^#/, "");
     const params = {};
@@ -3941,15 +4009,41 @@
     return params;
   }
 
-  function buildProfileHash(key, durationSec, spawnLeft) {
-    let h = "profile=" + encodeURIComponent(key);
+  function buildProfileHash(key, durationSec, spawnLeft, stealthExtra) {
+    const parts = [];
+    if (key) parts.push("profile=" + encodeURIComponent(key));
     if (durationSec != null && durationSec !== "") {
-      h += "&duration=" + encodeURIComponent(String(durationSec));
+      parts.push("duration=" + encodeURIComponent(String(durationSec)));
     }
     if (spawnLeft != null && spawnLeft > 0) {
-      h += "&spawn=" + encodeURIComponent(String(spawnLeft));
+      parts.push("spawn=" + encodeURIComponent(String(spawnLeft)));
     }
-    return h;
+    if (stealthExtra && stealthExtra.layout) {
+      parts.push("stealth=" + encodeURIComponent(stealthExtra.layout));
+    }
+    if (stealthExtra && stealthExtra.sp) {
+      parts.push("sp=" + encodeURIComponent(stealthExtra.sp));
+    }
+    if (stealthExtra && stealthExtra.tab) {
+      parts.push("stab=" + encodeURIComponent(stealthExtra.tab));
+    }
+    return parts.join("&");
+  }
+
+  async function buildStealthShareHash() {
+    const layout =
+      document.getElementById("stealthLayout")?.value || "blank";
+    const tabTitle =
+      document.getElementById("stealthTitle")?.value || "Documentation";
+    syncStealthPasswordFromInput();
+    const sp = stealthSessionPassword
+      ? await encryptStealthPassword(stealthSessionPassword)
+      : "";
+    return buildProfileHash(null, null, null, {
+      layout,
+      sp: sp || undefined,
+      tab: tabTitle,
+    });
   }
 
   function profileUrl(key, durationSec, spawnLeft) {
@@ -4026,31 +4120,42 @@
     return false;
   }
 
-  function applyHashProfile() {
-    const p = parseHashParams();
-    if (!p.profile) {
-      // spawn-only hash still shows the bar
-      if (p.spawn) {
-        const s = parseInt(p.spawn, 10);
-        if (s > 0) {
-          spawnRemaining = s;
-          updateSpawnBar();
-        }
+  async function applyStealthFromHash(p) {
+    if (!p) p = parseHashParams();
+    if (!p.stealth && !p.sp && !p.stab) return;
+
+    if (p.stealth) {
+      const layoutEl = document.getElementById("stealthLayout");
+      const allowed = ["blank", "docs", "terminal"];
+      if (layoutEl && allowed.includes(p.stealth)) {
+        layoutEl.value = p.stealth;
       }
-      return;
     }
-    let dur = null;
-    if (p.duration !== undefined && p.duration !== "") {
-      const n = parseFloat(p.duration);
-      if (isFinite(n) && n >= 0) dur = n;
+    if (p.stab) {
+      const titleEl = document.getElementById("stealthTitle");
+      if (titleEl) {
+        // use value if option exists, else still set title via stealth tab
+        const opts = [...titleEl.options].map((o) => o.value);
+        if (opts.includes(p.stab)) titleEl.value = p.stab;
+      }
     }
-    const ok = runProfile(p.profile, dur);
-    if (!ok) {
-      document.getElementById("presetStatus").textContent =
-        "Unknown profile in URL: " + p.profile;
-      document.getElementById("presetStatus").className = "status warn";
+    if (p.sp) {
+      const plain = await decryptStealthPassword(p.sp);
+      const passEl = document.getElementById("stealthPassword");
+      if (passEl && plain) {
+        passEl.value = plain;
+        stealthSessionPassword = plain;
+        updateStealthPassStatus();
+      }
     }
-    // Continue multi-tab chain if URL asked for more spawns
+    // Enter stealth UI from link
+    if (p.stealth) {
+      setStealthLayout(true);
+    }
+  }
+
+  async function applyHashProfile() {
+    const p = parseHashParams();
     if (p.spawn) {
       const s = parseInt(p.spawn, 10);
       if (isFinite(s) && s > 0) {
@@ -4058,6 +4163,20 @@
         updateSpawnBar();
       }
     }
+    if (p.profile) {
+      let dur = null;
+      if (p.duration !== undefined && p.duration !== "") {
+        const n = parseFloat(p.duration);
+        if (isFinite(n) && n >= 0) dur = n;
+      }
+      const ok = runProfile(p.profile, dur);
+      if (!ok) {
+        document.getElementById("presetStatus").textContent =
+          "Unknown profile in URL: " + p.profile;
+        document.getElementById("presetStatus").className = "status warn";
+      }
+    }
+    await applyStealthFromHash(p);
   }
 
   document.getElementById("presetQuick").addEventListener("click", () => {
@@ -4478,6 +4597,30 @@
     stealthPassInput.addEventListener("change", syncStealthPasswordFromInput);
   }
 
+  const copyStealthLinkBtn = document.getElementById("copyStealthLink");
+  if (copyStealthLinkBtn) {
+    copyStealthLinkBtn.addEventListener("click", async () => {
+      try {
+        const hash = await buildStealthShareHash();
+        const url =
+          location.origin + location.pathname + location.search + "#" + hash;
+        try {
+          history.replaceState(null, "", "#" + hash);
+        } catch (_) {}
+        await navigator.clipboard.writeText(url);
+        copyStealthLinkBtn.textContent = "Copied!";
+        setTimeout(() => {
+          copyStealthLinkBtn.textContent = "Copy stealth link";
+        }, 1500);
+      } catch (err) {
+        copyStealthLinkBtn.textContent = "Copy failed";
+        setTimeout(() => {
+          copyStealthLinkBtn.textContent = "Copy stealth link";
+        }, 1500);
+      }
+    });
+  }
+
   const unlockSubmit = document.getElementById("stealthUnlockSubmit");
   if (unlockSubmit) unlockSubmit.addEventListener("click", tryStealthUnlock);
   const unlockCancel = document.getElementById("stealthUnlockCancel");
@@ -4664,7 +4807,7 @@
   document.getElementById("blurCloseToggle").addEventListener("change", (e) => {
     const status = document.getElementById("blurCloseStatus");
     if (e.target.checked) {
-      status.textContent = "On — tab will close when you leave this page";
+      status.textContent = "On — closes when unfocused (ignored during Stealth)";
       status.className = "status on";
     } else {
       status.textContent = "Off";
@@ -4675,7 +4818,8 @@
   document.addEventListener("visibilitychange", () => {
     if (
       document.hidden &&
-      document.getElementById("blurCloseToggle")?.checked
+      document.getElementById("blurCloseToggle")?.checked &&
+      !stealthLayoutOn // stealth mode keeps the tab alive when backgrounded
     ) {
       tryCloseTab();
     }
@@ -4691,7 +4835,7 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "28";
+  const BUILD_ID = "30";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
