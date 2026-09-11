@@ -13,7 +13,7 @@
   <title>Device Stress Tester</title>
   <link rel="icon" id="appFavicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%235b8cff'/%3E%3C/svg%3E" />
   <!-- Bump ?v= when you deploy so browsers fetch fresh assets -->
-  <link rel="stylesheet" href="styles.css?v=28" />
+  <link rel="stylesheet" href="styles.css?v=30" />
 </head>
 <body>
   <div class="app">
@@ -24,7 +24,7 @@
         <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
         <button type="button" id="stealthToggle" class="theme-btn" aria-label="Toggle stealth mode">Stealth</button>
       </div>
-      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v28</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v30</span></p>
     </header>
 
     <!-- Stealth / keep-alive controls -->
@@ -72,7 +72,9 @@
         </label>
       </div>
       <p class="status" id="keepAliveStatus">Off</p>
-      <p class="hint">Optional password locks exiting stealth for this tab session only (cleared on refresh/close). Esc or triple-tap top-left still request exit. Keep-alive uses silent Web Audio against background throttling.</p>
+      <p class="hint">Optional password locks exiting stealth for this tab session only (cleared on refresh/close). Esc or triple-tap top-left still request exit. Keep-alive uses silent Web Audio against background throttling.
+      <button type="button" class="export-btn" id="copyStealthLink" style="margin-top:10px;width:100%">Copy stealth link</button>
+      <p class="hint">Shareable hash includes <code>stealth</code> layout and AES-GCM encrypted <code>sp</code> password, e.g. <code>#stealth=docs&amp;sp=…&amp;stab=Documentation</code>.</p>
     </section>
 
 
@@ -650,7 +652,7 @@
         </label>
       </div>
       <p class="status" id="blurCloseStatus">Off</p>
-      <p class="hint">When enabled, switching away from this tab/app attempts to close the tab. Browsers may block true close and open a blank page instead.</p>
+      <p class="hint">When enabled, switching away from this tab/app attempts to close the tab. Disabled automatically while Stealth layout is on. Browsers may block true close and open a blank page instead.</p>
     </section>
 
     <!-- Eclipse Void — blank screen -->
@@ -724,6 +726,6 @@ $ _</pre>
     </div>
   </div>
 
-  <script src="app.js?v=28"></script>
+  <script src="app.js?v=30"></script>
 </body>
 </html>
