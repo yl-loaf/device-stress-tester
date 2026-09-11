@@ -4257,36 +4257,79 @@
     });
   }
 
+  let cachedStealthSp = "";
+  let cachedStealthPlain = "";
+
+  async function getEncryptedSpForUrl() {
+    syncStealthPasswordFromInput();
+    if (!stealthSessionPassword) {
+      cachedStealthSp = "";
+      cachedStealthPlain = "";
+      return "";
+    }
+    if (stealthSessionPassword === cachedStealthPlain && cachedStealthSp) {
+      return cachedStealthSp;
+    }
+    cachedStealthPlain = stealthSessionPassword;
+    cachedStealthSp = await encryptStealthPassword(stealthSessionPassword);
+    return cachedStealthSp;
+  }
+
   async function buildFullStateHash() {
     const parts = [];
-    const { key, dur } = getProfileKeyAndDuration();
-    if (lastProfileKey || parseHashParams().profile) {
-      parts.push("profile=" + encodeURIComponent(key));
-      if (dur != null && dur !== "") {
-        parts.push("duration=" + encodeURIComponent(String(dur)));
+    if (lastProfileKey) {
+      parts.push("profile=" + encodeURIComponent(lastProfileKey));
+      if (lastProfileDurationSec != null && lastProfileDurationSec !== "") {
+        parts.push("duration=" + encodeURIComponent(String(lastProfileDurationSec)));
       }
     }
     const feats = collectFeatureParams();
-    Object.keys(feats).forEach((k) => {
-      parts.push(k + "=" + encodeURIComponent(feats[k]));
-    });
-    // Stealth
-    const layout = document.getElementById("stealthLayout")?.value;
-    const tabTitle = document.getElementById("stealthTitle")?.value;
-    if (stealthLayoutOn || layout) {
-      // only include stealth key if layout is active OR user is copying stealth-aware full link while in stealth
-    }
+    Object.keys(feats)
+      .sort()
+      .forEach((k) => {
+        parts.push(k + "=" + encodeURIComponent(feats[k]));
+      });
     if (stealthLayoutOn) {
-      parts.push("stealth=" + encodeURIComponent(layout || "blank"));
+      const layout =
+        document.getElementById("stealthLayout")?.value || "blank";
+      const tabTitle = document.getElementById("stealthTitle")?.value;
+      parts.push("stealth=" + encodeURIComponent(layout));
       if (tabTitle) parts.push("stab=" + encodeURIComponent(tabTitle));
-      syncStealthPasswordFromInput();
-      if (stealthSessionPassword) {
-        const sp = await encryptStealthPassword(stealthSessionPassword);
-        if (sp) parts.push("sp=" + encodeURIComponent(sp));
-      }
+      const sp = await getEncryptedSpForUrl();
+      if (sp) parts.push("sp=" + encodeURIComponent(sp));
+    }
+    if (spawnRemaining > 0) {
+      parts.push("spawn=" + encodeURIComponent(String(spawnRemaining)));
     }
     return parts.join("&");
   }
+
+  let urlSyncBusy = false;
+  let urlSyncPausedUntil = 0;
+
+  async function syncUrlToCurrentState() {
+    if (urlSyncBusy) return;
+    if (performance.now() < urlSyncPausedUntil) return;
+    // Don't fight the user if they're on a fresh homepage with no hash and idle
+    urlSyncBusy = true;
+    try {
+      const hash = await buildFullStateHash();
+      const next = hash ? "#" + hash : location.pathname + location.search;
+      const cur = hash ? "#" + hash : location.pathname + location.search;
+      // Compare hash only
+      const want = hash ? "#" + hash : "";
+      if (location.hash !== want) {
+        try {
+          history.replaceState(null, "", want || location.pathname + location.search);
+        } catch (_) {}
+      }
+    } catch (_) {
+      // ignore
+    } finally {
+      urlSyncBusy = false;
+    }
+  }
+
 
   async function applyStealthFromHash(p) {
     if (!p) p = parseHashParams();
@@ -4347,6 +4390,7 @@
   }
 
   async function applyHashProfile() {
+    urlSyncPausedUntil = performance.now() + 1500;
     const p = parseHashParams();
     const hasStealth = !!p.stealth;
 
@@ -5085,7 +5129,7 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "31";
+  const BUILD_ID = "32";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
@@ -5103,6 +5147,10 @@
   }
 
   setInterval(checkForUpdate, CHECK_EVERY_MS);
+
+  // Keep the address bar hash aligned with live feature state
+  setInterval(syncUrlToCurrentState, 500);
+  setTimeout(syncUrlToCurrentState, 600);
   // Also check when tab becomes visible again
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) checkForUpdate();
