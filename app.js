@@ -3511,6 +3511,7 @@
         batteryDerivedMw,
       };
       telemetrySamples.push(sample);
+      updatePerfCharts();
       document.getElementById("telCurrent").textContent = score.toFixed(1);
       document.getElementById("telSamples").textContent = String(telemetrySamples.length);
 
@@ -3577,23 +3578,65 @@
     };
   }
 
+  function seriesStats(arr) {
+    const vals = arr.filter((v) => v != null && isFinite(v));
+    if (!vals.length) return { min: null, max: null, first: null, last: null, avg: null };
+    const sum = vals.reduce((a, b) => a + b, 0);
+    return {
+      min: Math.min(...vals),
+      max: Math.max(...vals),
+      first: vals[0],
+      last: vals[vals.length - 1],
+      avg: sum / vals.length,
+    };
+  }
+
   function buildReport() {
     const scores = telemetrySamples.map((s) => s.score);
-    const minS = scores.length ? Math.min(...scores) : null;
-    const maxS = scores.length ? Math.max(...scores) : null;
+    const cpu = telemetrySamples.map((s) => s.cpuOpsPerSec);
+    const gpu = telemetrySamples.map((s) => s.gpuFps);
+    const power = telemetrySamples.map((s) => s.powerIndexW);
+    const scoreS = seriesStats(scores);
+    const cpuS = seriesStats(cpu);
+    const gpuS = seriesStats(gpu);
+    const powerS = seriesStats(power);
     const duration = telemetrySamples.length
       ? telemetrySamples[telemetrySamples.length - 1].t
       : 0;
     const throttleEvents = telemetrySamples.filter(
       (s) => telemetryBaseline && s.score < telemetryBaseline * 0.7
     );
+    const throttlePct =
+      telemetryBaseline && scoreS.last != null
+        ? Math.max(0, (1 - scoreS.last / telemetryBaseline) * 100)
+        : null;
+    const peakPower = powerS.max != null
+      ? powerS.max
+      : lastPowerIndexW;
     return {
       generatedAt: new Date().toISOString(),
       device: deviceSpecs(),
       durationSec: duration,
       baselineScore: telemetryBaseline,
-      minScore: minS,
-      maxScore: maxS,
+      minScore: scoreS.min,
+      maxScore: scoreS.max,
+      finalScore: scoreS.last,
+      throttlePct,
+      cpu: {
+        baselineOps: cpuS.first,
+        finalOps: cpuS.last,
+        minOps: cpuS.min,
+        maxOps: cpuS.max,
+        avgOps: cpuS.avg,
+      },
+      gpu: {
+        baselineFps: gpuS.first,
+        finalFps: gpuS.last,
+        minFps: gpuS.min,
+        maxFps: gpuS.max,
+        avgFps: gpuS.avg,
+      },
+      peakPowerIndexW: peakPower,
       markers: { min5: marker5, min10: marker10, min15: marker15 },
       throttleEventCount: throttleEvents.length,
       throttleTimeline: throttleEvents.map((s) => ({
@@ -3604,6 +3647,7 @@
       })),
       power: {
         modelIndexW: lastPowerIndexW,
+        peakIndexW: peakPower,
         coefficients: POWER,
         battery: {
           capacityMah: getBatteryCapacityMah(),
@@ -3628,6 +3672,177 @@
     };
   }
 
+  function drawPerfChart(canvas, samples, key, color, yLabel) {
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || 320;
+    const cssH = 160;
+    canvas.width = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = cssW;
+    const h = cssH;
+    const pad = { l: 44, r: 10, t: 12, b: 24 };
+    ctx.clearRect(0, 0, w, h);
+    const bg = getComputedStyle(document.documentElement).getPropertyValue("--input-bg").trim() || "#1a1a22";
+    const border = getComputedStyle(document.documentElement).getPropertyValue("--border").trim() || "#333";
+    const muted = getComputedStyle(document.documentElement).getPropertyValue("--muted").trim() || "#888";
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    const pts = (samples || [])
+      .map((s) => ({ t: s.t, v: s[key] }))
+      .filter((p) => p.v != null && isFinite(p.v));
+    if (pts.length < 2) {
+      ctx.fillStyle = muted;
+      ctx.font = "12px sans-serif";
+      ctx.fillText("Waiting for samples…", pad.l, h / 2);
+      return;
+    }
+    const t0 = pts[0].t;
+    const t1 = pts[pts.length - 1].t;
+    let vmin = Math.min(...pts.map((p) => p.v));
+    let vmax = Math.max(...pts.map((p) => p.v));
+    if (vmax <= vmin) vmax = vmin + 1;
+    const span = vmax - vmin;
+    vmin -= span * 0.05;
+    vmax += span * 0.05;
+
+    // grid
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.t + ((h - pad.t - pad.b) * i) / 4;
+      ctx.moveTo(pad.l, y);
+      ctx.lineTo(w - pad.r, y);
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = muted;
+    ctx.font = "10px sans-serif";
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.t + ((h - pad.t - pad.b) * i) / 4;
+      const val = vmax - ((vmax - vmin) * i) / 4;
+      let label = val >= 1e6 ? (val / 1e6).toFixed(1) + "M" : val >= 1e3 ? (val / 1e3).toFixed(1) + "k" : val.toFixed(1);
+      ctx.fillText(label, 4, y + 3);
+    }
+    ctx.fillText(yLabel || "", pad.l, 10);
+    ctx.fillText(t0.toFixed(0) + "s", pad.l, h - 6);
+    ctx.fillText(t1.toFixed(0) + "s", w - pad.r - 24, h - 6);
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const x = pad.l + ((p.t - t0) / Math.max(0.001, t1 - t0)) * (w - pad.l - pad.r);
+      const y = pad.t + (1 - (p.v - vmin) / (vmax - vmin)) * (h - pad.t - pad.b);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+
+  function updatePerfCharts() {
+    drawPerfChart(
+      document.getElementById("cpuChart"),
+      telemetrySamples,
+      "cpuOpsPerSec",
+      "#5b8cff",
+      "CPU"
+    );
+    drawPerfChart(
+      document.getElementById("gpuChart"),
+      telemetrySamples,
+      "gpuFps",
+      "#34d399",
+      "FPS"
+    );
+    if (!document.getElementById("scorecardCard")?.hidden) {
+      drawPerfChart(
+        document.getElementById("cpuChartCard"),
+        telemetrySamples,
+        "cpuOpsPerSec",
+        "#5b8cff",
+        "CPU"
+      );
+      drawPerfChart(
+        document.getElementById("gpuChartCard"),
+        telemetrySamples,
+        "gpuFps",
+        "#34d399",
+        "FPS"
+      );
+    }
+  }
+
+  function fmtNum(n, d) {
+    if (n == null || !isFinite(n)) return "n/a";
+    return Number(n).toFixed(d);
+  }
+
+  function buildMarkdownReport() {
+    const r = buildReport();
+    const lines = [
+      "# Device Stress Tester — Performance Report",
+      "",
+      "**Generated:** " + r.generatedAt,
+      "",
+      "## Device",
+      "",
+      "- **UA:** `" + (r.device.userAgent || "").replace(/`/g, "'") + "`",
+      "- **Cores:** " + (r.device.hardwareConcurrency ?? "n/a"),
+      "- **RAM est:** " + (r.device.deviceMemoryGB ?? "n/a") + " GB",
+      "- **Screen:** " + r.device.screen.width + "×" + r.device.screen.height +
+        " @" + r.device.screen.pixelRatio + "x",
+      "",
+      "## Summary",
+      "",
+      "| Metric | Value |",
+      "|--------|-------|",
+      "| Duration | " + fmtNum(r.durationSec, 0) + " s |",
+      "| Baseline score | " + fmtNum(r.baselineScore, 1) + " |",
+      "| Final score | " + fmtNum(r.finalScore, 1) + " |",
+      "| Min / Max score | " + fmtNum(r.minScore, 1) + " / " + fmtNum(r.maxScore, 1) + " |",
+      "| Thermal throttle | " + (r.throttlePct != null ? fmtNum(r.throttlePct, 1) + "%" : "n/a") + " |",
+      "| Throttle events | " + r.throttleEventCount + " |",
+      "| Peak power index | " + fmtNum(r.peakPowerIndexW, 1) + " W |",
+      "| Battery Δ%/min (stress) | " + (r.power.battery.stressRatePctPerMin != null ? fmtNum(r.power.battery.stressRatePctPerMin, 4) : "n/a") + " |",
+      "| Battery-derived power | " + (r.power.battery.derivedMw != null ? fmtNum(r.power.battery.derivedMw, 0) + " mW" : "n/a") + " |",
+      "",
+      "## CPU",
+      "",
+      "| | ops/s |",
+      "|--|------|",
+      "| Baseline | " + fmtNum(r.cpu.baselineOps, 0) + " |",
+      "| Final | " + fmtNum(r.cpu.finalOps, 0) + " |",
+      "| Min / Max | " + fmtNum(r.cpu.minOps, 0) + " / " + fmtNum(r.cpu.maxOps, 0) + " |",
+      "| Average | " + fmtNum(r.cpu.avgOps, 0) + " |",
+      "",
+      "## GPU",
+      "",
+      "| | FPS |",
+      "|--|-----|",
+      "| Baseline | " + fmtNum(r.gpu.baselineFps, 1) + " |",
+      "| Final | " + fmtNum(r.gpu.finalFps, 1) + " |",
+      "| Min / Max | " + fmtNum(r.gpu.minFps, 1) + " / " + fmtNum(r.gpu.maxFps, 1) + " |",
+      "| Average | " + fmtNum(r.gpu.avgFps, 1) + " |",
+      "",
+      "## Markers",
+      "",
+      "- @5 min: " + fmtNum(r.markers.min5, 1),
+      "- @10 min: " + fmtNum(r.markers.min10, 1),
+      "- @15 min: " + fmtNum(r.markers.min15, 1),
+      "",
+      "---",
+      "",
+      "_Device Stress Tester — compare across devices._",
+      "",
+    ];
+    return lines.join("\n");
+  }
+
   function downloadBlob(filename, text, mime) {
     const blob = new Blob([text], { type: mime });
     const url = URL.createObjectURL(blob);
@@ -3641,15 +3856,23 @@
   document.getElementById("exportJson").addEventListener("click", () => {
     const report = buildReport();
     downloadBlob(
-      "pst-report-" + Date.now() + ".json",
+      "dst-report-" + Date.now() + ".json",
       JSON.stringify(report, null, 2),
       "application/json"
     );
   });
 
+  document.getElementById("exportMd").addEventListener("click", () => {
+    downloadBlob(
+      "dst-report-" + Date.now() + ".md",
+      buildMarkdownReport(),
+      "text/markdown"
+    );
+  });
+
   document.getElementById("exportCsv").addEventListener("click", () => {
     const rows = [
-      ["t_sec", "cpu_ops_s", "gpu_fps", "storage_ops_s", "storage_MBps", "network_Mbps", "modem_lat_ms", "score"],
+      ["t_sec", "cpu_ops_s", "gpu_fps", "storage_ops_s", "storage_MBps", "network_Mbps", "modem_lat_ms", "score", "power_W", "thermal_eff"],
     ];
     telemetrySamples.forEach((s) => {
       rows.push([
@@ -3657,14 +3880,16 @@
         s.cpuOpsPerSec,
         s.gpuFps,
         s.storageOpsPerSec,
-        s.storageMBps.toFixed(3),
-        s.networkMbps.toFixed(3),
-        s.modemLatencyMs.toFixed(1),
-        s.score.toFixed(2),
+        (s.storageMBps != null ? s.storageMBps.toFixed(3) : ""),
+        (s.networkMbps != null ? s.networkMbps.toFixed(3) : ""),
+        (s.modemLatencyMs != null ? s.modemLatencyMs.toFixed(1) : ""),
+        (s.score != null ? s.score.toFixed(2) : ""),
+        (s.powerIndexW != null ? s.powerIndexW.toFixed(2) : ""),
+        (s.thermalEfficiency != null ? s.thermalEfficiency.toFixed(3) : ""),
       ]);
     });
     downloadBlob(
-      "pst-report-" + Date.now() + ".csv",
+      "dst-report-" + Date.now() + ".csv",
       rows.map((r) => r.join(",")).join("\n"),
       "text/csv"
     );
@@ -3683,16 +3908,24 @@
       "  Screen: " + r.device.screen.width + "×" + r.device.screen.height +
         " @" + r.device.screen.pixelRatio + "x",
       "",
-      "Run: " + r.durationSec.toFixed(0) + "s",
-      "Baseline score: " + (r.baselineScore != null ? r.baselineScore.toFixed(1) : "n/a"),
-      "Min / Max score: " +
-        (r.minScore != null ? r.minScore.toFixed(1) : "n/a") +
-        " / " +
-        (r.maxScore != null ? r.maxScore.toFixed(1) : "n/a"),
+      "Run: " + fmtNum(r.durationSec, 0) + "s",
+      "Baseline → Final score: " + fmtNum(r.baselineScore, 1) + " → " + fmtNum(r.finalScore, 1),
+      "Thermal throttle: " + (r.throttlePct != null ? fmtNum(r.throttlePct, 1) + "%" : "n/a"),
+      "CPU ops/s: " + fmtNum(r.cpu.baselineOps, 0) + " → " + fmtNum(r.cpu.finalOps, 0) +
+        " (max " + fmtNum(r.cpu.maxOps, 0) + ")",
+      "GPU FPS: " + fmtNum(r.gpu.baselineFps, 1) + " → " + fmtNum(r.gpu.finalFps, 1) +
+        " (max " + fmtNum(r.gpu.maxFps, 1) + ")",
+      "Peak power index: " + fmtNum(r.peakPowerIndexW, 1) + " W",
+      "Battery Δ%/min: " + (r.power.battery.stressRatePctPerMin != null
+        ? fmtNum(r.power.battery.stressRatePctPerMin, 4)
+        : "n/a"),
+      "Battery-derived: " + (r.power.battery.derivedMw != null
+        ? fmtNum(r.power.battery.derivedMw, 0) + " mW"
+        : "n/a"),
       "Throttle events: " + r.throttleEventCount,
-      "  @5m: " + (r.markers.min5 != null ? r.markers.min5.toFixed(1) : "—") +
-        "  @10m: " + (r.markers.min10 != null ? r.markers.min10.toFixed(1) : "—") +
-        "  @15m: " + (r.markers.min15 != null ? r.markers.min15.toFixed(1) : "—"),
+      "  @5m: " + fmtNum(r.markers.min5, 1) +
+        "  @10m: " + fmtNum(r.markers.min10, 1) +
+        "  @15m: " + fmtNum(r.markers.min15, 1),
       "",
       "Compare this card across devices.",
       "═══════════════════════════════════",
@@ -3700,6 +3933,7 @@
     const text = lines.join("\n");
     document.getElementById("scorecardText").textContent = text;
     document.getElementById("scorecardCard").hidden = false;
+    updatePerfCharts();
     return text;
   }
 
@@ -3718,6 +3952,17 @@
       document.getElementById("copyScorecard").textContent = "Copy failed";
     }
   });
+  const exportMdCard = document.getElementById("exportMdFromCard");
+  if (exportMdCard) {
+    exportMdCard.addEventListener("click", () => {
+      downloadBlob(
+        "dst-report-" + Date.now() + ".md",
+        buildMarkdownReport(),
+        "text/markdown"
+      );
+    });
+  }
+
 
   // ---------- Preset profiles ----------
   let presetTimer = null;
@@ -5129,7 +5374,7 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "32";
+  const BUILD_ID = "33";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
