@@ -841,3 +841,28 @@ html.stealth-on .app { /* stress UI still runs underneath */ }
   color: #fff;
   border-color: #1a1a1a;
 }
+
+
+.perf-charts {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin: 12px 0;
+}
+@media (min-width: 800px) {
+  .perf-charts { grid-template-columns: 1fr 1fr; }
+}
+.perf-chart-wrap h3 {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+.perf-chart-wrap canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 10px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+}
