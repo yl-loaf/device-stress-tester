@@ -39,7 +39,7 @@
     html.boot-stealth.boot-stealth-docs::after { background: #fafafa; }
     html.boot-stealth.boot-stealth-terminal::after { background: #0c0c0c; }
   </style>
-  <link rel="stylesheet" href="styles.css?v=32" />
+  <link rel="stylesheet" href="styles.css?v=33" />
 </head>
 <body>
   <div class="app">
@@ -50,7 +50,7 @@
         <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
         <button type="button" id="stealthToggle" class="theme-btn" aria-label="Toggle stealth mode">Stealth</button>
       </div>
-      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v32</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v33</span></p>
     </header>
 
     <!-- Stealth / keep-alive controls -->
@@ -142,19 +142,43 @@
         <div class="battery-row"><span>@ 15 min</span><span id="tel15">—</span></div>
         <div class="battery-row"><span>Samples</span><span id="telSamples">0</span></div>
       </div>
+      <div class="perf-charts">
+        <div class="perf-chart-wrap">
+          <h3>CPU ops/s</h3>
+          <canvas id="cpuChart" width="640" height="180"></canvas>
+        </div>
+        <div class="perf-chart-wrap">
+          <h3>GPU FPS</h3>
+          <canvas id="gpuChart" width="640" height="180"></canvas>
+        </div>
+      </div>
       <div class="export-row">
         <button type="button" class="export-btn" id="exportJson">Export JSON</button>
+        <button type="button" class="export-btn" id="exportMd">Export Markdown</button>
         <button type="button" class="export-btn" id="exportCsv">Export CSV</button>
         <button type="button" class="export-btn" id="exportScorecard">Scorecard</button>
       </div>
-      <p class="hint">Samples CPU/GPU/storage/network every few seconds. Drop vs baseline suggests thermal throttling.</p>
+      <p class="hint">Samples CPU/GPU/storage/network every few seconds. Charts update live. Drop vs baseline suggests thermal throttling.</p>
     </section>
 
     <!-- Scorecard (for screenshot) -->
     <section class="card scorecard-card card-span-all" id="scorecardCard" hidden>
       <h2>Performance scorecard</h2>
       <pre id="scorecardText" class="scorecard-pre"></pre>
-      <button type="button" class="export-btn" id="copyScorecard">Copy summary</button>
+      <div class="perf-charts scorecard-charts">
+        <div class="perf-chart-wrap">
+          <h3>CPU ops/s</h3>
+          <canvas id="cpuChartCard" width="640" height="180"></canvas>
+        </div>
+        <div class="perf-chart-wrap">
+          <h3>GPU FPS</h3>
+          <canvas id="gpuChartCard" width="640" height="180"></canvas>
+        </div>
+      </div>
+      <div class="export-row">
+        <button type="button" class="export-btn" id="copyScorecard">Copy summary</button>
+        <button type="button" class="export-btn" id="exportMdFromCard">Download Markdown</button>
+      </div>
     </section>
 
     <section class="card power-card card-span-all">
@@ -753,6 +777,6 @@ $ _</pre>
     </div>
   </div>
 
-  <script src="app.js?v=32"></script>
+  <script src="app.js?v=33"></script>
 </body>
 </html>
