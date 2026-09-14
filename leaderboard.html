@@ -5,31 +5,46 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#0a0a0f" />
   <title>Leaderboard — Device Stress Tester</title>
-  <link rel="stylesheet" href="styles.css?v=36" />
+  <link rel="stylesheet" href="styles.css?v=39" />
   <style>
     .lb-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-    .lb-table th, .lb-table td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+    .lb-table th, .lb-table td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
     .lb-table th { color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
     .lb-table tr:hover td { background: var(--input-bg); }
     .lb-rank { font-weight: 700; color: var(--accent); width: 2.5rem; }
-    .lb-score { font-weight: 700; font-variant-numeric: tabular-nums; }
+    .lb-score { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .lb-meta { color: var(--muted); font-size: 0.75rem; }
     .lb-name { font-weight: 600; }
-    .lb-device {
-      margin-top: 4px;
-      color: var(--text);
-      font-size: 0.8rem;
-      opacity: 0.85;
-      line-height: 1.35;
-      max-width: 28rem;
-      word-break: break-word;
-    }
+    .lb-device { margin-top: 4px; font-size: 0.8rem; opacity: 0.9; line-height: 1.35; max-width: 28rem; word-break: break-word; }
     .lb-you { outline: 1px solid var(--accent); border-radius: 8px; }
     .lb-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-    .lb-form input[type="text"] {
-      flex: 1; min-width: 140px; padding: 10px 12px; border-radius: 10px;
+    .lb-form input[type="text"], .lb-filters select {
+      flex: 1; min-width: 120px; padding: 10px 12px; border-radius: 10px;
       border: 1px solid var(--border); background: var(--input-bg); color: var(--text);
     }
+    .lb-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .throttle-pill {
+      display: inline-block; margin-top: 4px; padding: 2px 8px; border-radius: 999px;
+      font-size: 0.72rem; font-weight: 600;
+    }
+    .throttle-good { background: rgba(52, 211, 153, 0.2); color: #34d399; }
+    .throttle-mid { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
+    .throttle-bad { background: rgba(248, 113, 113, 0.2); color: #f87171; }
+    .sub-bars { margin-top: 8px; display: grid; gap: 4px; min-width: 140px; }
+    .sub-row { display: grid; grid-template-columns: 52px 1fr 36px; gap: 6px; align-items: center; font-size: 0.7rem; color: var(--muted); }
+    .sub-track { height: 6px; border-radius: 4px; background: var(--border); overflow: hidden; }
+    .sub-fill { height: 100%; border-radius: 4px; }
+    .sub-fill.cpu { background: #5b8cff; }
+    .sub-fill.gpu { background: #34d399; }
+    .sub-fill.io { background: #fbbf24; }
+    .sub-fill.th { background: #a78bfa; }
+    .mode-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .mode-tabs button {
+      padding: 8px 12px; border-radius: 999px; border: 1px solid var(--border);
+      background: transparent; color: var(--text); cursor: pointer; font-weight: 600; font-size: 0.85rem;
+    }
+    .mode-tabs button.active { border-color: var(--accent); color: var(--accent); background: rgba(91,140,255,0.12); }
+    .proof { font-family: ui-monospace, monospace; font-size: 0.65rem; color: var(--muted); margin-top: 4px; }
   </style>
   <script src="config.js"></script>
 </head>
@@ -40,20 +55,30 @@
         <h1>Leaderboard</h1>
         <a class="theme-btn" href="index.html" style="text-decoration:none">← Tester</a>
       </div>
-      <p class="subtitle">Top 100 Device Performance Scores · refreshes every 60s</p>
+      <p class="subtitle">Top 100 · filters · peak vs sustained · refreshes every 60s</p>
     </header>
 
     <section class="card card-span-all">
       <p class="hint" id="lbModeHint">Checking backend…</p>
       <p class="status" id="lbStatus">Loading…</p>
+      <div class="mode-tabs" id="scoreModeTabs">
+        <button type="button" data-mode="peak" class="active">Peak DPS</button>
+        <button type="button" data-mode="sustained">Sustained (10‑min style)</button>
+      </div>
+      <div class="lb-filters">
+        <select id="fForm"><option value="">All devices</option><option value="mobile">Mobile</option><option value="tablet">Tablet</option><option value="desktop">Desktop</option></select>
+        <select id="fOs"><option value="">All OS</option><option value="android">Android</option><option value="ios">iOS</option><option value="macos">macOS</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
+        <select id="fBrowser"><option value="">All browsers</option><option value="chrome">Chrome</option><option value="safari">Safari</option><option value="firefox">Firefox</option><option value="edge">Edge</option></select>
+        <select id="fChip"><option value="">All chipsets</option><option value="apple">Apple Silicon / Apple</option><option value="mobile-soc">Mobile SoC</option><option value="x86">Intel / AMD (x86)</option></select>
+      </div>
       <div class="lb-form">
         <input type="text" id="lbName" maxlength="24" placeholder="Your name / handle" />
         <button type="button" class="export-btn" id="lbSubmit">Submit my best score</button>
         <button type="button" class="export-btn" id="lbRefresh">Refresh</button>
       </div>
       <p class="hint" style="margin-top:8px">
-        Run stress on the tester first so a best DPS is saved. Global board uses Google Sheets when
-        <code>config.js</code> has <code>sheetsLeaderboardUrl</code> set (see <code>sheets-leaderboard.gs</code>).
+        Scores include device class, throttle delta, subscore bars, and a proof hash.
+        Redeploy <code>sheets-leaderboard.gs</code> (new version) and add a <code>meta</code> column if upgrading an old sheet.
       </p>
     </section>
 
@@ -61,16 +86,16 @@
       <h2>Top 100</h2>
       <table class="lb-table">
         <thead>
-          <tr><th>#</th><th>Name / device</th><th>Score</th><th>When</th></tr>
+          <tr><th>#</th><th>Name / device</th><th>Score</th><th>Subscores</th><th>When</th></tr>
         </thead>
         <tbody id="lbBody">
-          <tr><td colspan="4" class="lb-meta">No entries yet</td></tr>
+          <tr><td colspan="5" class="lb-meta">No entries yet</td></tr>
         </tbody>
       </table>
     </section>
 
     <footer class="card-span-all">
-      <p class="small">Device Stress Tester · DPS = weighted CPU + GPU + I/O + thermal hold</p>
+      <p class="small">Device Stress Tester · DPS = CPU + GPU + I/O + thermal hold · proof = SHA-256 of result fields</p>
     </footer>
   </div>
   <script>
@@ -82,7 +107,8 @@
   const SHEETS_URL = (cfg.sheetsLeaderboardUrl || "").trim();
   const useSheets = /^https:\/\/script\.google\.com\//.test(SHEETS_URL);
 
-  let remoteEntries = null; // null = not loaded yet
+  let remoteEntries = null;
+  let scoreMode = "peak"; // peak | sustained
 
   function loadLocalBoard() {
     try {
@@ -107,6 +133,13 @@
     }
   }
 
+  function formatDps(n) {
+    if (n == null || !isFinite(n)) return "—";
+    const x = Math.round(Number(n) * 1000) / 1000;
+    if (Math.abs(x - Math.round(x)) < 1e-9) return String(Math.round(x));
+    return x.toFixed(3);
+  }
+
   function escapeHtml(s) {
     return String(s)
       .replace(/&/g, "&amp;")
@@ -118,20 +151,120 @@
   function modeHint() {
     const el = document.getElementById("lbModeHint");
     if (!el) return;
-    if (useSheets) {
-      el.innerHTML =
-        "<strong>Global board (Google Sheets)</strong> — scores are shared via your Apps Script web app.";
-    } else {
-      el.innerHTML =
-        "<strong>Local board</strong> (this browser only). To go global: create a Sheet, deploy <code>sheets-leaderboard.gs</code> as a Web App, put the URL in <code>config.js</code> → <code>sheetsLeaderboardUrl</code>.";
+    el.innerHTML = useSheets
+      ? "<strong>Global board (Google Sheets)</strong> — shared scores with device filters &amp; throttle indicators."
+      : "<strong>Local board</strong> — set <code>config.js</code> → <code>sheetsLeaderboardUrl</code> for global.";
+  }
+
+  function entrySortScore(e) {
+    if (scoreMode === "sustained") {
+      return Number(e.sustainedScore || 0) || Number(e.score || 0);
     }
+    return Number(e.peakScore != null ? e.peakScore : e.score) || 0;
   }
 
   function currentBoard() {
-    if (useSheets && remoteEntries) {
-      return remoteEntries.slice().sort((a, b) => b.score - a.score).slice(0, MAX);
+    let board = useSheets && remoteEntries ? remoteEntries.slice() : loadLocalBoard();
+    const form = document.getElementById("fForm").value;
+    const os = document.getElementById("fOs").value;
+    const browser = document.getElementById("fBrowser").value;
+    const chip = document.getElementById("fChip").value;
+    board = board.filter((e) => {
+      if (form && e.form !== form) {
+        // fallback: infer from device string for old rows
+        if (form === "mobile" && !/Android|iPhone|Mobile/i.test(e.device || "")) return false;
+        if (form === "desktop" && /Android|iPhone|iPad|Mobile/i.test(e.device || "")) return false;
+        if (e.form && e.form !== form) return false;
+        if (!e.form) {
+          if (form === "mobile" && !/Android|iPhone|Mobile/i.test(e.device || "")) return false;
+          if (form === "desktop" && /Android|iPhone|Mobile/i.test(e.device || "")) return false;
+        }
+      }
+      if (os && e.os !== os) {
+        if (!e.os) {
+          const d = e.device || "";
+          if (os === "android" && !/Android/i.test(d)) return false;
+          if (os === "ios" && !/iPhone|iPad|iOS/i.test(d)) return false;
+          if (os === "macos" && !/Mac/i.test(d)) return false;
+          if (os === "windows" && !/Windows/i.test(d)) return false;
+          if (os === "linux" && !/Linux/i.test(d)) return false;
+        } else return false;
+      }
+      if (browser && e.browser !== browser) {
+        if (!e.browser) {
+          const d = e.device || "";
+          if (browser === "chrome" && !/Chrome/i.test(d)) return false;
+          if (browser === "safari" && !/Safari/i.test(d)) return false;
+          if (browser === "firefox" && !/Firefox/i.test(d)) return false;
+          if (browser === "edge" && !/Edge/i.test(d)) return false;
+        } else return false;
+      }
+      if (chip && e.chipset !== chip) {
+        if (!e.chipset) return true; // keep unknown on chip filter soft
+        return false;
+      }
+      return true;
+    });
+    board.sort((a, b) => entrySortScore(b) - entrySortScore(a));
+    return board.slice(0, MAX);
+  }
+
+  function throttlePill(pct) {
+    if (pct == null || !isFinite(pct)) {
+      return '<span class="throttle-pill throttle-mid">throttle n/a</span>';
     }
-    return loadLocalBoard().sort((a, b) => b.score - a.score).slice(0, MAX);
+    const n = Number(pct);
+    let cls = "throttle-good";
+    let icon = "🟢";
+    if (n > 15 && n <= 30) {
+      cls = "throttle-mid";
+      icon = "🟡";
+    } else if (n > 30) {
+      cls = "throttle-bad";
+      icon = "🔴";
+    }
+    return (
+      '<span class="throttle-pill ' +
+      cls +
+      '">' +
+      icon +
+      " " +
+      (n >= 0 ? "−" : "") +
+      Math.abs(n).toFixed(0) +
+      "% throttle</span>"
+    );
+  }
+
+  function subBars(e) {
+    const b = e.breakdown || {};
+    const caps = { cpu: 3500, gpu: 3000, io: 2000, thermal: 1500 };
+    const rows = [
+      ["CPU", b.cpu, caps.cpu, "cpu"],
+      ["GPU", b.gpu, caps.gpu, "gpu"],
+      ["I/O", b.io, caps.io, "io"],
+      ["Therm", b.thermal, caps.thermal, "th"],
+    ];
+    return (
+      '<div class="sub-bars">' +
+      rows
+        .map(([label, val, cap, cls]) => {
+          const v = Number(val) || 0;
+          const pct = Math.max(0, Math.min(100, (v / cap) * 100));
+          return (
+            '<div class="sub-row"><span>' +
+            label +
+            '</span><div class="sub-track"><div class="sub-fill ' +
+            cls +
+            '" style="width:' +
+            pct +
+            '%"></div></div><span>' +
+            v +
+            "</span></div>"
+          );
+        })
+        .join("") +
+      "</div>"
+    );
   }
 
   function render() {
@@ -141,13 +274,21 @@
     const best = getBest();
     if (!board.length) {
       body.innerHTML =
-        '<tr><td colspan="4" class="lb-meta">No entries yet — submit a score</td></tr>';
+        '<tr><td colspan="5" class="lb-meta">No entries match — submit a score or clear filters</td></tr>';
     } else {
       body.innerHTML = board
         .map((e, i) => {
           const you = best && e.id === best.id ? ' class="lb-you"' : "";
           const when = e.at ? new Date(e.at).toLocaleString() : "—";
-          const device = e.device || "Unknown device";
+          const score = entrySortScore(e);
+          const peak = e.peakScore != null ? e.peakScore : e.score;
+          const sust = e.sustainedScore || 0;
+          const caps = e.capabilities
+            ? " · WebGPU " + (e.capabilities.webgpu ? "yes" : "no") +
+              (e.cores ? " · " + e.cores + "c" : "")
+            : e.cores
+              ? " · " + e.cores + "c"
+              : "";
           return (
             "<tr" +
             you +
@@ -161,11 +302,24 @@
             (you ? " <span class='lb-meta'>(you)</span>" : "") +
             "</div>" +
             "<div class='lb-device'>" +
-            escapeHtml(device) +
+            escapeHtml(e.device || "Unknown device") +
+            escapeHtml(caps) +
             "</div>" +
+            (e.proof
+              ? "<div class='proof'>proof " + escapeHtml(String(e.proof).slice(0, 16)) + "…</div>"
+              : "") +
             "</td>" +
             '<td class="lb-score">' +
-            Number(e.score).toFixed(0) +
+            formatDps(score) +
+            "<div class='lb-meta'>peak " +
+            formatDps(peak) +
+            " · sust " +
+            formatDps(sust) +
+            "</div>" +
+            throttlePill(e.throttlePct) +
+            "</td>" +
+            "<td>" +
+            subBars(e) +
             "</td>" +
             '<td class="lb-meta">' +
             when +
@@ -175,15 +329,24 @@
         })
         .join("");
     }
-    const rank = best ? board.findIndex((e) => e.id === best.id) + 1 : 0;
+    const rank = best
+      ? board.findIndex((e) => e.id === best.id) + 1
+      : 0;
     status.textContent =
       (best
-        ? "Your best: " + Number(best.score).toFixed(0) + " DPS" + (rank ? " · rank #" + rank : "")
+        ? "Your best: " +
+          formatDps(best.score) +
+          " peak / " +
+          formatDps(best.sustainedScore || 0) +
+          " sust" +
+          (rank ? " · rank #" + rank : "")
         : "No score on this device yet") +
       " · " +
       board.length +
-      " entries · " +
+      " shown · " +
       (useSheets ? "Sheets" : "local") +
+      " · " +
+      scoreMode +
       " · " +
       new Date().toLocaleTimeString();
     status.className = "status on";
@@ -208,7 +371,8 @@
       }
     } catch (err) {
       const status = document.getElementById("lbStatus");
-      status.textContent = "Sheets fetch failed: " + (err.message || err) + " — showing local fallback";
+      status.textContent =
+        "Sheets fetch failed: " + (err.message || err) + " — local fallback";
       status.className = "status warn";
       remoteEntries = loadLocalBoard();
     }
@@ -218,21 +382,17 @@
   async function submit() {
     const best = getBest();
     if (!best || !best.score) {
-      alert("No score saved yet. Open the tester, run CPU/GPU stress (or a profile), then come back.");
+      alert("No score saved yet. Run stress on the tester first.");
       return;
     }
     const name = (document.getElementById("lbName").value || "").trim() || "Anon";
     const entry = {
-      id: best.id,
+      ...best,
       name: name.slice(0, 24),
-      score: best.score,
-      device: best.device || "",
       at: new Date().toISOString(),
-      breakdown: best.breakdown || null,
     };
-
     try {
-      localStorage.setItem(BEST_KEY, JSON.stringify({ ...best, name: entry.name }));
+      localStorage.setItem(BEST_KEY, JSON.stringify(entry));
     } catch (_) {}
 
     if (useSheets) {
@@ -240,7 +400,6 @@
       status.textContent = "Submitting to Google Sheets…";
       status.className = "status on";
       try {
-        // text/plain avoids a CORS preflight against Apps Script
         const res = await fetch(SHEETS_URL, {
           method: "POST",
           body: JSON.stringify({ action: "submit", ...entry }),
@@ -253,14 +412,13 @@
         render();
         status.textContent =
           "Submitted · rank #" + (data.rank || "?") + " · " + new Date().toLocaleTimeString();
-        status.className = "status on";
       } catch (err) {
-        // Still save locally
         const board = loadLocalBoard().filter((e) => e.id !== entry.id);
         board.push(entry);
-        board.sort((a, b) => b.score - a.score);
+        board.sort((a, b) => entrySortScore(b) - entrySortScore(a));
         saveLocalBoard(board);
-        status.textContent = "Sheets submit failed (" + (err.message || err) + ") — saved locally";
+        status.textContent =
+          "Sheets submit failed (" + (err.message || err) + ") — saved locally";
         status.className = "status warn";
         render();
       }
@@ -269,7 +427,7 @@
 
     const board = loadLocalBoard().filter((e) => e.id !== entry.id);
     board.push(entry);
-    board.sort((a, b) => b.score - a.score);
+    board.sort((a, b) => entrySortScore(b) - entrySortScore(a));
     saveLocalBoard(board);
     render();
   }
@@ -278,6 +436,18 @@
   document.getElementById("lbRefresh").addEventListener("click", () => {
     if (useSheets) fetchRemote();
     else render();
+  });
+  ["fForm", "fOs", "fBrowser", "fChip"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", render);
+  });
+  document.getElementById("scoreModeTabs").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-mode]");
+    if (!btn) return;
+    scoreMode = btn.getAttribute("data-mode");
+    document.querySelectorAll("#scoreModeTabs button").forEach((b) => {
+      b.classList.toggle("active", b === btn);
+    });
+    render();
   });
 
   modeHint();
