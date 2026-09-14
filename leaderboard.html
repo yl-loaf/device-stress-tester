@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#0a0a0f" />
   <title>Leaderboard — Device Stress Tester</title>
-  <link rel="stylesheet" href="styles.css?v=35" />
+  <link rel="stylesheet" href="styles.css?v=36" />
   <style>
     .lb-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
     .lb-table th, .lb-table td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--border); }
@@ -14,6 +14,16 @@
     .lb-rank { font-weight: 700; color: var(--accent); width: 2.5rem; }
     .lb-score { font-weight: 700; font-variant-numeric: tabular-nums; }
     .lb-meta { color: var(--muted); font-size: 0.75rem; }
+    .lb-name { font-weight: 600; }
+    .lb-device {
+      margin-top: 4px;
+      color: var(--text);
+      font-size: 0.8rem;
+      opacity: 0.85;
+      line-height: 1.35;
+      max-width: 28rem;
+      word-break: break-word;
+    }
     .lb-you { outline: 1px solid var(--accent); border-radius: 8px; }
     .lb-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     .lb-form input[type="text"] {
@@ -51,10 +61,10 @@
       <h2>Top 100</h2>
       <table class="lb-table">
         <thead>
-          <tr><th>#</th><th>Name</th><th>Score</th><th>Device</th><th>When</th></tr>
+          <tr><th>#</th><th>Name / device</th><th>Score</th><th>When</th></tr>
         </thead>
         <tbody id="lbBody">
-          <tr><td colspan="5" class="lb-meta">No entries yet</td></tr>
+          <tr><td colspan="4" class="lb-meta">No entries yet</td></tr>
         </tbody>
       </table>
     </section>
@@ -131,12 +141,13 @@
     const best = getBest();
     if (!board.length) {
       body.innerHTML =
-        '<tr><td colspan="5" class="lb-meta">No entries yet — submit a score</td></tr>';
+        '<tr><td colspan="4" class="lb-meta">No entries yet — submit a score</td></tr>';
     } else {
       body.innerHTML = board
         .map((e, i) => {
           const you = best && e.id === best.id ? ' class="lb-you"' : "";
           const when = e.at ? new Date(e.at).toLocaleString() : "—";
+          const device = e.device || "Unknown device";
           return (
             "<tr" +
             you +
@@ -145,14 +156,16 @@
             (i + 1) +
             "</td>" +
             "<td>" +
+            "<div class='lb-name'>" +
             escapeHtml(e.name || "Anon") +
             (you ? " <span class='lb-meta'>(you)</span>" : "") +
+            "</div>" +
+            "<div class='lb-device'>" +
+            escapeHtml(device) +
+            "</div>" +
             "</td>" +
             '<td class="lb-score">' +
             Number(e.score).toFixed(0) +
-            "</td>" +
-            '<td class="lb-meta">' +
-            escapeHtml(e.device || "") +
             "</td>" +
             '<td class="lb-meta">' +
             when +
