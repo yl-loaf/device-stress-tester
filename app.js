@@ -3517,12 +3517,33 @@
     const mem = navigator.deviceMemory ? navigator.deviceMemory + "GB" : "";
     const ua = navigator.userAgent || "";
     let os = "Device";
-    if (/Android/i.test(ua)) os = "Android";
-    else if (/iPhone|iPad/i.test(ua)) os = "iOS";
-    else if (/Mac/i.test(ua)) os = "Mac";
+    if (/Android/i.test(ua)) {
+      const m = ua.match(/Android\s([\d.]+)/i);
+      os = "Android" + (m ? " " + m[1] : "");
+    } else if (/iPhone/i.test(ua)) {
+      const m = ua.match(/OS\s([\d_]+)/i);
+      os = "iPhone" + (m ? " iOS " + m[1].replace(/_/g, ".") : "");
+    } else if (/iPad/i.test(ua)) {
+      const m = ua.match(/OS\s([\d_]+)/i);
+      os = "iPad" + (m ? " iPadOS " + m[1].replace(/_/g, ".") : "");
+    } else if (/Mac/i.test(ua)) os = "Mac";
     else if (/Windows/i.test(ua)) os = "Windows";
     else if (/Linux/i.test(ua)) os = "Linux";
-    return os + " · " + cores + "c" + (mem ? " · " + mem : "");
+    let browser = "";
+    if (/Edg\//i.test(ua)) browser = "Edge";
+    else if (/Chrome\//i.test(ua) && !/Edg\//i.test(ua)) browser = "Chrome";
+    else if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) browser = "Safari";
+    else if (/Firefox\//i.test(ua)) browser = "Firefox";
+    const scr =
+      (screen.width || "?") + "×" + (screen.height || "?");
+    const parts = [
+      os,
+      cores + "c",
+      mem || null,
+      scr,
+      browser || null,
+    ].filter(Boolean);
+    return parts.join(" · ");
   }
 
   function persistBestScore(dps) {
@@ -5537,7 +5558,7 @@
   });
 
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "35";
+  const BUILD_ID = "36";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
