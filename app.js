@@ -1079,12 +1079,48 @@
     glProgram = null;
   }
 
+  // PID state for fractal GPU load (canvas + webgl)
+  let gpuPidIntegral = 0;
+  let gpuPidPrevError = 0;
+  let gpuPidLastTs = 0;
+
+  function resetGpuPid() {
+    gpuPidIntegral = 0;
+    gpuPidPrevError = 0;
+    gpuPidLastTs = performance.now();
+  }
+
+  function gpuPidStep(fpsNow, goal) {
+    const now = performance.now();
+    let dt = (now - (gpuPidLastTs || now)) / 1000;
+    if (!isFinite(dt) || dt <= 0) dt = 0.016;
+    if (dt > 0.5) dt = 0.5;
+    gpuPidLastTs = now;
+
+    // error > 0 → FPS too low → ease load; error < 0 → FPS too high → push load
+    const error = goal - fpsNow;
+    gpuPidIntegral += error * dt;
+    // anti-windup
+    gpuPidIntegral = Math.max(-400, Math.min(400, gpuPidIntegral));
+    const derivative = (error - gpuPidPrevError) / dt;
+    gpuPidPrevError = error;
+
+    const Kp = 1.35;
+    const Ki = 0.22;
+    const Kd = 0.08;
+    // Control effort: negative error (too fast) → positive load delta
+    const effort = -(Kp * error + Ki * gpuPidIntegral + Kd * derivative);
+    return { effort, error };
+  }
+
   function applyLoadLevel(level) {
-    loadLevel = Math.max(5, Math.min(100, level));
-    const side = Math.round(160 + (loadLevel / 100) * 800);
+    // Unbounded upward for high-end GPUs; soft floor only
+    loadLevel = Math.max(5, level);
+    const t = loadLevel / 100;
+    const side = Math.min(4096, Math.round(160 + t * 800 + Math.max(0, loadLevel - 100) * 6));
     currentW = side;
     currentH = side;
-    maxIter = Math.round(32 + (loadLevel / 100) * 288);
+    maxIter = Math.round(32 + t * 288 + Math.max(0, loadLevel - 100) * 4);
 
     if (!ctx2d) ctx2d = canvas.getContext("2d", { alpha: false });
     canvas.width = currentW;
@@ -1134,11 +1170,12 @@
 
   function adjustLoadTowardGoal() {
     if (fps <= 0) return;
-    const error = goalFps - fps;
-    if (Math.abs(error) < 2) return;
-    const step = Math.max(1, Math.min(8, Math.abs(error) * 0.6));
-    if (error < 0) applyLoadLevel(loadLevel + step);
-    else applyLoadLevel(loadLevel - step);
+    const g = Math.max(5, goalFps); // min goal 5 FPS
+    const { effort, error } = gpuPidStep(fps, g);
+    if (Math.abs(error) < 1.2 && Math.abs(effort) < 2) return;
+    const step = Math.max(0.5, Math.min(40, Math.abs(effort)));
+    if (effort > 0) applyLoadLevel(loadLevel + step);
+    else applyLoadLevel(Math.max(5, loadLevel - step));
   }
 
   // ---- WebGL volume raymarch — heavy GPU load, adaptive to goal FPS ----
@@ -1266,27 +1303,26 @@
   }
 
   function applyWebglLoad(level) {
-    // Allow >100 for sub-15 FPS targets (extra passes / scale / steps)
-    webglLoad = Math.max(5, Math.min(200, level));
+    // No hard upper load ceiling — PID may push indefinitely on strong GPUs
+    webglLoad = Math.max(5, level);
     const t = Math.min(webglLoad, 100) / 100;
-    const over = Math.max(0, webglLoad - 100); // 0–100 beyond 100%
+    const over = Math.max(0, webglLoad - 100);
 
-    // scale: 0.45 → 2.0 at 100%, up to ~3.2 past 100%
-    webglScale = 0.45 + t * 1.55 + over * 0.012;
-    // ray steps ×1.5, capped at 2000 (~720 at 100%, ~2000 at max over-load)
-    webglSteps = Math.min(
-      2000,
-      Math.round((48 + t * 432 + over * 8.5) * 1.5)
+    webglScale = 0.45 + t * 1.55 + over * 0.014;
+    // steps grow without a fixed ceiling (shader still runs)
+    webglSteps = Math.max(
+      32,
+      Math.round((48 + t * 432 + over * 12) * 1.5)
     );
-    // passes: 1 → 6 at 100%, up to 16 past 100%
-    webglPasses = Math.max(1, Math.round(1 + t * 5 + over * 0.1));
+    webglPasses = Math.max(1, Math.round(1 + t * 5 + over * 0.12));
 
     if (!gl) return;
 
     const cssW = Math.min(window.innerWidth - 28, 480);
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
-    const w = Math.min(2048, Math.round(cssW * dpr * webglScale));
-    const h = Math.min(2048, Math.round(cssW * dpr * webglScale));
+    // Allow larger FBOs for extreme load; still clamp to GPU-safe-ish size
+    const w = Math.min(8192, Math.round(cssW * dpr * webglScale));
+    const h = Math.min(8192, Math.round(cssW * dpr * webglScale));
     if (Math.abs(canvas.width - w) > 4 || Math.abs(canvas.height - h) > 4) {
       canvas.width = w;
       canvas.height = h;
@@ -1297,36 +1333,37 @@
     }
     if (glStepsLoc) gl.uniform1f(glStepsLoc, webglSteps);
 
-    const pct = webglLoad > 100 ? Math.round(webglLoad) + "%+" : Math.round(webglLoad) + "%";
+    const pct =
+      webglLoad > 100 ? Math.round(webglLoad) + "%+" : Math.round(webglLoad) + "%";
     document.getElementById("loadCounter").textContent =
       pct + " (" + canvas.width + "px · " + webglSteps + " steps · ×" + webglPasses + ")";
   }
 
   function startLoadForGoal(g) {
-    // Always begin at 100%; adaptive control only increases from there
     void g;
+    resetGpuPid();
     return 100;
   }
 
   function adjustWebglTowardGoal() {
     if (fps <= 0) return;
-    const error = goalFps - fps;
-    const dead = goalFps <= 10 ? 1 : goalFps < 15 ? 1.5 : 3;
-    if (Math.abs(error) < dead) return;
+    const g = Math.max(5, goalFps); // minimum goal FPS
+    const { effort, error } = gpuPidStep(fps, g);
+    const dead = g <= 8 ? 0.8 : g <= 15 ? 1.2 : 2.5;
+    if (Math.abs(error) < dead && Math.abs(effort) < 2) return;
 
-    let step = Math.max(3, Math.min(12, Math.abs(error) * 0.8));
-    // Near/below 10 FPS goal: push steps/passes hard if still too fast
-    if (error < 0 && goalFps <= 10) {
-      step = Math.max(10, Math.min(25, Math.abs(error) * 2));
-    } else if (error < 0 && goalFps < 15) {
-      step = Math.max(6, Math.min(20, Math.abs(error) * 1.5));
+    let step = Math.max(2, Math.min(50, Math.abs(effort) * 1.1));
+    if (error < 0 && g <= 10) {
+      // still above a low goal → push harder
+      step = Math.max(step, Math.min(60, Math.abs(error) * 3));
     }
-    if (error < 0) {
-      // FPS too high → increase load (never start path below 100%)
+    if (effort > 0) {
       applyWebglLoad(webglLoad + step);
     } else if (webglLoad > 100) {
-      // Only ease off above the 100% floor
       applyWebglLoad(Math.max(100, webglLoad - step));
+    } else if (error > dead * 2) {
+      // well below goal and already at floor — tiny ease only if >> goal miss
+      applyWebglLoad(Math.max(100, webglLoad - step * 0.25));
     }
   }
 
@@ -1416,7 +1453,7 @@
   function setGpu(on) {
     if (on) {
       gpuMode = document.getElementById("gpuMode").value || "canvas";
-      goalFps = parseInt(document.getElementById("goalFpsSlider").value, 10) || 15;
+      goalFps = Math.max(5, parseInt(document.getElementById("goalFpsSlider").value, 10) || 15);
       updateModeUI();
 
       if (gpuMode === "webgl") {
@@ -1459,7 +1496,8 @@
   });
 
   document.getElementById("goalFpsSlider").addEventListener("input", (e) => {
-    const v = parseInt(e.target.value, 10);
+    const v = Math.max(5, parseInt(e.target.value, 10) || 5);
+    e.target.value = String(v);
     goalFps = v;
     document.getElementById("goalFpsValue").textContent = v;
     document.getElementById("goalFpsLabel").textContent = v;
@@ -3486,11 +3524,12 @@
           ? 1
           : 0;
 
-    // Normalized pillars (soft caps from typical high-end mobile/desktop browser ranges)
-    const cpuPts = Math.min(3500, cpuMops * 280); // ~12.5 Mops → 3500
-    const gpuPts = Math.min(3000, gpuFps * 40); // 75 fps → 3000 under load
-    const ioPts = Math.min(2000, storMBps * 80 + netMbps * 12);
-    const thermalPts = Math.min(1500, te * 1500);
+    // Unbounded pillars — stronger devices keep scaling; total still soft-shaped
+    const cpuPts = cpuMops * 280;
+    // Lower FPS under heavier load can still score via thermal/CPU; reward achievable FPS * load pressure via raw fps
+    const gpuPts = gpuFps * 40 + Math.max(0, (webglLoad || loadLevel || 0) - 100) * 1.8;
+    const ioPts = storMBps * 80 + netMbps * 12;
+    const thermalPts = te * 1500;
 
     const raw = cpuPts + gpuPts + ioPts + thermalPts;
     // Competitive soft ceiling: linear region, then diminishing returns with 3 d.p.
@@ -4655,6 +4694,53 @@
       return true;
     }
 
+    if (k === "benchmark" || k === "bench" || k === "lb") {
+      const dur =
+        durationSecOverride != null && durationSecOverride > 0
+          ? durationSecOverride * 1000
+          : 3 * 60 * 1000; // 3 min default — peak + sustained sample
+      lastProfileDurationSec =
+        durationSecOverride != null ? durationSecOverride : 180;
+      startPreset("Benchmark", dur, () => {
+        // Leaderboard-oriented: max throughput paths, no screen-flash / audio noise
+        const workers = document.getElementById("cpuWorkersSlider");
+        if (workers) {
+          const maxW = parseInt(workers.max, 10) || 16;
+          workers.value = String(maxW);
+          workers.dispatchEvent(new Event("input"));
+        }
+        const ram = document.getElementById("ramMaxSlider");
+        if (ram) {
+          ram.value = "90";
+          ram.dispatchEvent(new Event("input"));
+        }
+        const streams = document.getElementById("modemStreamsSlider");
+        if (streams) {
+          streams.value = "12";
+          streams.dispatchEvent(new Event("input"));
+        }
+        applyGpuHeavy(); // webgl · goal 5 FPS · PID load
+        setToggle("cpuToggle", true);
+        setToggle("gpuToggle", true);
+        setToggle("storageToggle", true);
+        setToggle("modemToggle", true);
+        setToggle("ramToggle", true);
+        setToggle("wasmToggle", true);
+        setToggle("zeroGcToggle", true);
+        setToggle("webgpuComputeToggle", true);
+        setToggle("downloadToggle", true);
+        // avoid non-scoring noise
+        setToggle("torchToggle", false);
+        setToggle("voidToggle", false);
+        setToggle("toneToggle", false);
+        setToggle("micToggle", false);
+        setToggle("panelToggle", false);
+        setToggle("hdrToggle", false);
+        setToggle("audioDspToggle", false);
+      });
+      return true;
+    }
+
     if (k === "max") {
       const dur =
         durationSecOverride != null && durationSecOverride > 0
@@ -5238,6 +5324,13 @@
     runProfile("torture");
     try {
       history.replaceState(null, "", "#" + buildProfileHash("torture", 0));
+    } catch (_) {}
+  });
+
+  document.getElementById("presetBenchmark")?.addEventListener("click", () => {
+    runProfile("benchmark");
+    try {
+      history.replaceState(null, "", "#" + buildProfileHash("benchmark", 180));
     } catch (_) {}
   });
 
@@ -5922,7 +6015,7 @@
   });
 
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "39";
+  const BUILD_ID = "40";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
