@@ -3469,6 +3469,152 @@
     );
   }
 
+  /**
+   * Absolute Device Performance Score (DPS), ~0–10000 scale.
+   * Designed to be comparable across devices when under similar stress.
+   * Sub-scores are capped so one subsystem cannot dominate forever.
+   */
+  function absoluteDeviceScore() {
+    const cpuMops = Math.max(0, metrics.cpuOpsPerSec) / 1e6;
+    const gpuFps = Math.max(0, metrics.gpuFps);
+    const storMBps = Math.max(0, metrics.storageMBps || 0);
+    const netMbps = Math.max(0, metrics.networkMbps || 0);
+    const te =
+      thermalEfficiency != null && isFinite(thermalEfficiency)
+        ? Math.max(0, Math.min(1.2, thermalEfficiency))
+        : metrics.cpuOpsPerSec > 0 || metrics.gpuFps > 0
+          ? 1
+          : 0;
+
+    // Normalized pillars (soft caps from typical high-end mobile/desktop browser ranges)
+    const cpuPts = Math.min(3500, cpuMops * 280); // ~12.5 Mops → 3500
+    const gpuPts = Math.min(3000, gpuFps * 40); // 75 fps → 3000 under load
+    const ioPts = Math.min(2000, storMBps * 80 + netMbps * 12);
+    const thermalPts = Math.min(1500, te * 1500);
+
+    const total = Math.round(cpuPts + gpuPts + ioPts + thermalPts);
+    return {
+      total,
+      cpuPts: Math.round(cpuPts),
+      gpuPts: Math.round(gpuPts),
+      ioPts: Math.round(ioPts),
+      thermalPts: Math.round(thermalPts),
+      cpuMops,
+      gpuFps,
+      te,
+    };
+  }
+
+  let bestScoreRecord = null;
+  try {
+    bestScoreRecord = JSON.parse(localStorage.getItem("dst-best-score-v1") || "null");
+  } catch (_) {
+    bestScoreRecord = null;
+  }
+
+  function deviceLabelShort() {
+    const cores = navigator.hardwareConcurrency || "?";
+    const mem = navigator.deviceMemory ? navigator.deviceMemory + "GB" : "";
+    const ua = navigator.userAgent || "";
+    let os = "Device";
+    if (/Android/i.test(ua)) os = "Android";
+    else if (/iPhone|iPad/i.test(ua)) os = "iOS";
+    else if (/Mac/i.test(ua)) os = "Mac";
+    else if (/Windows/i.test(ua)) os = "Windows";
+    else if (/Linux/i.test(ua)) os = "Linux";
+    return os + " · " + cores + "c" + (mem ? " · " + mem : "");
+  }
+
+  function persistBestScore(dps) {
+    if (!dps || !dps.total) return;
+    const prev = bestScoreRecord && bestScoreRecord.score ? bestScoreRecord.score : 0;
+    if (dps.total < prev && prev > 0) {
+      // still update UI; only store if higher or equal
+      if (dps.total < prev) return;
+    }
+    if (dps.total <= 0) return;
+    if (prev && dps.total < prev) return;
+    const id =
+      (bestScoreRecord && bestScoreRecord.id) ||
+      "d-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    bestScoreRecord = {
+      id,
+      score: dps.total,
+      device: deviceLabelShort(),
+      at: new Date().toISOString(),
+      breakdown: {
+        cpu: dps.cpuPts,
+        gpu: dps.gpuPts,
+        io: dps.ioPts,
+        thermal: dps.thermalPts,
+      },
+      name: (bestScoreRecord && bestScoreRecord.name) || "",
+    };
+    try {
+      localStorage.setItem("dst-best-score-v1", JSON.stringify(bestScoreRecord));
+    } catch (_) {}
+  }
+
+  function updateAbsoluteScoreUI() {
+    const el = document.getElementById("absScoreValue");
+    const br = document.getElementById("absScoreBreakdown");
+    const st = document.getElementById("absScoreStatus");
+    if (!el) return;
+    const dps = absoluteDeviceScore();
+    const active =
+      metrics.cpuOpsPerSec > 0 ||
+      metrics.gpuFps > 0 ||
+      metrics.storageMBps > 0 ||
+      metrics.networkMbps > 0;
+    if (!active && dps.total === 0) {
+      el.textContent = "—";
+      if (br) {
+        br.innerHTML =
+          "<span>CPU —</span><span>GPU —</span><span>I/O —</span><span>Thermal —</span>";
+      }
+      if (st) {
+        st.textContent =
+          (bestScoreRecord && bestScoreRecord.score
+            ? "Best on this device: " + bestScoreRecord.score + " DPS · "
+            : "") + "Enable CPU/GPU or run a profile";
+        st.className = "status";
+      }
+      return;
+    }
+    el.textContent = String(dps.total);
+    if (br) {
+      br.innerHTML =
+        "<span>CPU <strong>" +
+        dps.cpuPts +
+        "</strong></span>" +
+        "<span>GPU <strong>" +
+        dps.gpuPts +
+        "</strong></span>" +
+        "<span>I/O <strong>" +
+        dps.ioPts +
+        "</strong></span>" +
+        "<span>Thermal <strong>" +
+        dps.thermalPts +
+        "</strong></span>";
+    }
+    persistBestScore(dps);
+    if (st) {
+      st.textContent =
+        "Live DPS " +
+        dps.total +
+        (bestScoreRecord && bestScoreRecord.score
+          ? " · best " + bestScoreRecord.score
+          : "") +
+        " · CPU " +
+        dps.cpuMops.toFixed(1) +
+        " Mops · GPU " +
+        dps.gpuFps.toFixed(0) +
+        " fps";
+      st.className = "status on";
+    }
+  }
+
+
   function startTelemetry() {
     if (telemetryTimer) return;
     telemetrySamples = [];
@@ -5373,8 +5519,25 @@
   initBatteryTracking();
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
+
+  document.getElementById("submitScoreBtn")?.addEventListener("click", () => {
+    updateAbsoluteScoreUI();
+    const dps = absoluteDeviceScore();
+    if (dps.total > 0) persistBestScore(dps);
+    const best = bestScoreRecord;
+    if (!best || !best.score) {
+      const st = document.getElementById("absScoreStatus");
+      if (st) {
+        st.textContent = "No score yet — run CPU/GPU stress first";
+        st.className = "status warn";
+      }
+      return;
+    }
+    window.location.href = "leaderboard.html";
+  });
+
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "33";
+  const BUILD_ID = "35";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
