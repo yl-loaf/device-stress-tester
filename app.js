@@ -3492,7 +3492,19 @@
     const ioPts = Math.min(2000, storMBps * 80 + netMbps * 12);
     const thermalPts = Math.min(1500, te * 1500);
 
-    const total = Math.round(cpuPts + gpuPts + ioPts + thermalPts);
+    const raw = cpuPts + gpuPts + ioPts + thermalPts;
+    // Competitive soft ceiling: linear region, then diminishing returns with 3 d.p.
+    const KNEE = 7200;
+    const SPAN = 2800;
+    let total;
+    if (raw <= KNEE) {
+      total = raw;
+    } else {
+      const over = raw - KNEE;
+      total = KNEE + (SPAN * over) / (SPAN + over);
+    }
+    total = Math.round(total * 1000) / 1000;
+
     return {
       total,
       cpuPts: Math.round(cpuPts),
@@ -3505,6 +3517,14 @@
     };
   }
 
+  function formatDps(n) {
+    if (n == null || !isFinite(n)) return "—";
+    const x = Math.round(Number(n) * 1000) / 1000;
+    if (Math.abs(x - Math.round(x)) < 1e-9) return String(Math.round(x));
+    return x.toFixed(3);
+  }
+
+
   let bestScoreRecord = null;
   try {
     bestScoreRecord = JSON.parse(localStorage.getItem("dst-best-score-v1") || "null");
@@ -3513,54 +3533,239 @@
   }
 
   function deviceLabelShort() {
-    const cores = navigator.hardwareConcurrency || "?";
-    const mem = navigator.deviceMemory ? navigator.deviceMemory + "GB" : "";
-    const ua = navigator.userAgent || "";
-    let os = "Device";
-    if (/Android/i.test(ua)) {
-      const m = ua.match(/Android\s([\d.]+)/i);
-      os = "Android" + (m ? " " + m[1] : "");
-    } else if (/iPhone/i.test(ua)) {
-      const m = ua.match(/OS\s([\d_]+)/i);
-      os = "iPhone" + (m ? " iOS " + m[1].replace(/_/g, ".") : "");
-    } else if (/iPad/i.test(ua)) {
-      const m = ua.match(/OS\s([\d_]+)/i);
-      os = "iPad" + (m ? " iPadOS " + m[1].replace(/_/g, ".") : "");
-    } else if (/Mac/i.test(ua)) os = "Mac";
-    else if (/Windows/i.test(ua)) os = "Windows";
-    else if (/Linux/i.test(ua)) os = "Linux";
-    let browser = "";
-    if (/Edg\//i.test(ua)) browser = "Edge";
-    else if (/Chrome\//i.test(ua) && !/Edg\//i.test(ua)) browser = "Chrome";
-    else if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) browser = "Safari";
-    else if (/Firefox\//i.test(ua)) browser = "Firefox";
-    const scr =
-      (screen.width || "?") + "×" + (screen.height || "?");
+    const info = deviceClassification();
     const parts = [
-      os,
-      cores + "c",
-      mem || null,
-      scr,
-      browser || null,
+      info.osLabel,
+      info.cores + "c",
+      info.memoryGB ? info.memoryGB + "GB" : null,
+      info.screen,
+      info.browser,
     ].filter(Boolean);
     return parts.join(" · ");
   }
 
-  function persistBestScore(dps) {
-    if (!dps || !dps.total) return;
-    const prev = bestScoreRecord && bestScoreRecord.score ? bestScoreRecord.score : 0;
-    if (dps.total < prev && prev > 0) {
-      // still update UI; only store if higher or equal
-      if (dps.total < prev) return;
+  function deviceClassification() {
+    const ua = navigator.userAgent || "";
+    const cores = navigator.hardwareConcurrency || 0;
+    const memoryGB = navigator.deviceMemory || null;
+    let form = "desktop";
+    if (/Mobi|Android.*Mobile|iPhone|iPod/i.test(ua)) form = "mobile";
+    else if (/iPad|Android(?!.*Mobile)|Tablet/i.test(ua)) form = "tablet";
+
+    let os = "other";
+    let osLabel = "Device";
+    if (/Android/i.test(ua)) {
+      os = "android";
+      const m = ua.match(/Android\s([\d.]+)/i);
+      osLabel = "Android" + (m ? " " + m[1] : "");
+    } else if (/iPhone|iPod/i.test(ua)) {
+      os = "ios";
+      const m = ua.match(/OS\s([\d_]+)/i);
+      osLabel = "iPhone" + (m ? " iOS " + m[1].replace(/_/g, ".") : "");
+    } else if (/iPad/i.test(ua)) {
+      os = "ios";
+      const m = ua.match(/OS\s([\d_]+)/i);
+      osLabel = "iPad" + (m ? " iPadOS " + m[1].replace(/_/g, ".") : "");
+    } else if (/Mac/i.test(ua)) {
+      os = "macos";
+      osLabel = "macOS";
+    } else if (/Windows/i.test(ua)) {
+      os = "windows";
+      osLabel = "Windows";
+    } else if (/Linux/i.test(ua)) {
+      os = "linux";
+      osLabel = "Linux";
     }
-    if (dps.total <= 0) return;
-    if (prev && dps.total < prev) return;
+
+    let browser = "other";
+    let browserLabel = "";
+    if (/Edg\//i.test(ua)) {
+      browser = "edge";
+      browserLabel = "Edge";
+    } else if (/Chrome\//i.test(ua) && !/Edg\//i.test(ua)) {
+      browser = "chrome";
+      browserLabel = "Chrome";
+    } else if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) {
+      browser = "safari";
+      browserLabel = "Safari";
+    } else if (/Firefox\//i.test(ua)) {
+      browser = "firefox";
+      browserLabel = "Firefox";
+    }
+
+    let chipset = "unknown";
+    if (os === "macos" || os === "ios") chipset = "apple";
+    else if (/Android/i.test(ua)) chipset = "mobile-soc";
+    else if (os === "windows" || os === "linux") chipset = "x86";
+
+    const screenStr =
+      (screen.width || "?") + "×" + (screen.height || "?");
+    const refreshHz =
+      (window.screen && screen.availWidth && window.refreshRate) ||
+      null;
+
+    return {
+      form,
+      os,
+      osLabel,
+      browser,
+      browserLabel: browserLabel || browser,
+      chipset,
+      cores,
+      memoryGB,
+      screen: screenStr,
+      // best-effort refresh rate
+      refreshRate: typeof screen !== "undefined" && screen.refreshRate
+        ? screen.refreshRate
+        : null,
+    };
+  }
+
+  function browserCapabilities() {
+    return {
+      webgpu: !!(navigator.gpu),
+      webgl2: !!document.createElement("canvas").getContext("webgl2"),
+      hardwareConcurrency: navigator.hardwareConcurrency || null,
+      deviceMemoryGB: navigator.deviceMemory || null,
+      maxTouchPoints: navigator.maxTouchPoints || 0,
+      cookieEnabled: navigator.cookieEnabled,
+      language: navigator.language || "",
+      platform: navigator.platform || "",
+    };
+  }
+
+  async function sha256Hex(str) {
+    const data = new TextEncoder().encode(str);
+    const digest = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  // Peak vs sustained tracking (session)
+  let peakDpsSession = 0;
+  let sustainedSamples = []; // {t, score} under load
+  let lastProofHash = "";
+
+  function throttlePctFromEfficiency() {
+    if (thermalEfficiency == null || !isFinite(thermalEfficiency)) return null;
+    // 1.0 = no loss; 0.65 = 35% throttle
+    return Math.max(0, Math.min(100, (1 - thermalEfficiency) * 100));
+  }
+
+  function updateSustainedTracking(dps) {
+    const now = performance.now();
+    const underLoad =
+      metrics.cpuOpsPerSec > 0 ||
+      metrics.gpuFps > 0 ||
+      metrics.storageMBps > 0 ||
+      metrics.networkMbps > 0;
+    if (dps && dps.total > peakDpsSession) peakDpsSession = dps.total;
+    if (underLoad && dps && dps.total > 0) {
+      sustainedSamples.push({ t: now, score: dps.total });
+      // keep ~15 minutes of 0.5s samples max
+      const cutoff = now - 15 * 60 * 1000;
+      sustainedSamples = sustainedSamples.filter((s) => s.t >= cutoff);
+    }
+  }
+
+  /** Average DPS over the last `windowSec` of under-load samples */
+  function sustainedDps(windowSec) {
+    if (!sustainedSamples.length) return 0;
+    const now = performance.now();
+    const cut = now - windowSec * 1000;
+    const win = sustainedSamples.filter((s) => s.t >= cut);
+    if (win.length < 4) return 0;
+    const sum = win.reduce((a, s) => a + s.score, 0);
+    return Math.round(sum / win.length);
+  }
+
+  let lastSaveStatus = "Save: waiting for a score…";
+  let sheetsSyncTimer = null;
+  let sheetsSyncInFlight = false;
+  let pendingSheetsSync = false;
+
+  function setSaveStatus(msg, kind) {
+    lastSaveStatus = msg;
+    const el = document.getElementById("absSaveStatus");
+    if (!el) return;
+    el.textContent = msg;
+    el.className = "status" + (kind ? " " + kind : "");
+  }
+
+  function getSheetsLeaderboardUrl() {
+    try {
+      const u = (window.DST_CONFIG && window.DST_CONFIG.sheetsLeaderboardUrl) || "";
+      return String(u).trim();
+    } catch (_) {
+      return "";
+    }
+  }
+
+  async function buildProofHash(record) {
+    const payload = [
+      record.id,
+      record.score,
+      record.peakScore,
+      record.sustainedScore,
+      record.device,
+      record.at,
+      (record.breakdown && record.breakdown.cpu) || 0,
+      (record.breakdown && record.breakdown.gpu) || 0,
+      (record.breakdown && record.breakdown.io) || 0,
+      (record.breakdown && record.breakdown.thermal) || 0,
+      record.throttlePct,
+      record.form,
+      record.os,
+      record.browser,
+    ].join("|");
+    try {
+      return await sha256Hex(payload);
+    } catch (_) {
+      // fallback non-crypto
+      let h = 0;
+      for (let i = 0; i < payload.length; i++) {
+        h = (h * 31 + payload.charCodeAt(i)) >>> 0;
+      }
+      return "x" + h.toString(16);
+    }
+  }
+
+  /** @returns {Promise<boolean>} true if a new personal best was stored */
+  async function persistBestScore(dps) {
+    if (!dps || !dps.total || dps.total <= 0) return false;
+    updateSustainedTracking(dps);
+    const prev =
+      bestScoreRecord && bestScoreRecord.score ? Number(bestScoreRecord.score) : 0;
+    const peak = Math.max(peakDpsSession, dps.total, prev);
+    const sustained10 = sustainedDps(600); // 10 min window average
+    const sustained1 = sustainedDps(60);
+    const sustained = sustained10 || sustained1 || 0;
+    // Primary "best" is peak; we still update if peak rises
+    if (prev && peak <= prev && bestScoreRecord && bestScoreRecord.sustainedScore >= sustained) {
+      // Update sustained/throttle in place if improved without new peak
+      if (bestScoreRecord && sustained > (bestScoreRecord.sustainedScore || 0)) {
+        bestScoreRecord.sustainedScore = sustained;
+        bestScoreRecord.throttlePct = throttlePctFromEfficiency();
+        try {
+          localStorage.setItem("dst-best-score-v1", JSON.stringify(bestScoreRecord));
+        } catch (_) {}
+      }
+      return false;
+    }
+    if (peak <= 0) return false;
+
     const id =
       (bestScoreRecord && bestScoreRecord.id) ||
       "d-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-    bestScoreRecord = {
+    const cls = deviceClassification();
+    const caps = browserCapabilities();
+    const throttlePct = throttlePctFromEfficiency();
+    const record = {
       id,
-      score: dps.total,
+      score: peak,
+      peakScore: peak,
+      sustainedScore: sustained,
       device: deviceLabelShort(),
       at: new Date().toISOString(),
       breakdown: {
@@ -3569,11 +3774,146 @@
         io: dps.ioPts,
         thermal: dps.thermalPts,
       },
+      throttlePct,
+      form: cls.form,
+      os: cls.os,
+      browser: cls.browser,
+      chipset: cls.chipset,
+      cores: cls.cores,
+      memoryGB: cls.memoryGB,
+      capabilities: caps,
       name: (bestScoreRecord && bestScoreRecord.name) || "",
+      proof: "",
     };
+    record.proof = await buildProofHash(record);
+    lastProofHash = record.proof;
+    bestScoreRecord = record;
     try {
       localStorage.setItem("dst-best-score-v1", JSON.stringify(bestScoreRecord));
+      setSaveStatus(
+        "Saved best " +
+          bestScoreRecord.score +
+          " DPS locally · proof " +
+          record.proof.slice(0, 8) +
+          "… · " +
+          new Date().toLocaleTimeString(),
+        "on"
+      );
+    } catch (err) {
+      setSaveStatus("Local save failed: " + (err.message || err), "warn");
+      return false;
+    }
+    try {
+      const key = "dst-leaderboard-v1";
+      const raw = localStorage.getItem(key);
+      let board = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(board)) board = [];
+      board = board.filter((e) => e.id !== bestScoreRecord.id);
+      board.push({ ...bestScoreRecord, name: bestScoreRecord.name || "You" });
+      board.sort((a, b) => b.score - a.score);
+      localStorage.setItem(key, JSON.stringify(board.slice(0, 100)));
     } catch (_) {}
+
+    scheduleSheetsSync();
+    return true;
+  }
+
+  function scheduleSheetsSync() {
+    const url = getSheetsLeaderboardUrl();
+    if (!url || !/^https:\/\/script\.google\.com\//.test(url)) {
+      setSaveStatus(
+        (lastSaveStatus.startsWith("Saved best")
+          ? lastSaveStatus + " · "
+          : "") + "Sheets URL not set — local only",
+        lastSaveStatus.startsWith("Saved") ? "on" : ""
+      );
+      return;
+    }
+    pendingSheetsSync = true;
+    if (sheetsSyncTimer) clearTimeout(sheetsSyncTimer);
+    sheetsSyncTimer = setTimeout(() => {
+      syncBestToSheets(false);
+    }, 2500);
+    setSaveStatus(
+      "New best " +
+        (bestScoreRecord && bestScoreRecord.score) +
+        " DPS saved locally · syncing to leaderboard soon…",
+      "on"
+    );
+  }
+
+  async function syncBestToSheets(force) {
+    const url = getSheetsLeaderboardUrl();
+    if (!url || !/^https:\/\/script\.google\.com\//.test(url)) {
+      if (force) setSaveStatus("No Sheets URL in config.js", "warn");
+      return;
+    }
+    if (!bestScoreRecord || !bestScoreRecord.score) {
+      if (force) setSaveStatus("No best score to sync", "warn");
+      return;
+    }
+    if (sheetsSyncInFlight) {
+      pendingSheetsSync = true;
+      return;
+    }
+    sheetsSyncInFlight = true;
+    pendingSheetsSync = false;
+    setSaveStatus(
+      "Syncing " + bestScoreRecord.score + " DPS to leaderboard…",
+      "on"
+    );
+    try {
+      const payload = {
+        action: "submit",
+        id: bestScoreRecord.id,
+        name: (bestScoreRecord.name || "Anon").slice(0, 24),
+        score: Math.round(Number(bestScoreRecord.score) * 1000) / 1000,
+        peakScore: bestScoreRecord.peakScore || bestScoreRecord.score,
+        sustainedScore: bestScoreRecord.sustainedScore || 0,
+        device: bestScoreRecord.device || deviceLabelShort(),
+        at: bestScoreRecord.at || new Date().toISOString(),
+        breakdown: bestScoreRecord.breakdown || {},
+        throttlePct: bestScoreRecord.throttlePct,
+        form: bestScoreRecord.form,
+        os: bestScoreRecord.os,
+        browser: bestScoreRecord.browser,
+        chipset: bestScoreRecord.chipset,
+        cores: bestScoreRecord.cores,
+        memoryGB: bestScoreRecord.memoryGB,
+        capabilities: bestScoreRecord.capabilities,
+        proof: bestScoreRecord.proof || "",
+      };
+      const res = await fetch(url, {
+        method: "POST",
+        body: JSON.stringify(payload),
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        redirect: "follow",
+      });
+      const data = await res.json();
+      if (!data || !data.ok) throw new Error((data && data.error) || "sync failed");
+      setSaveStatus(
+        "Leaderboard updated · rank #" +
+          (data.rank || "?") +
+          " · best " +
+          bestScoreRecord.score +
+          " DPS · " +
+          new Date().toLocaleTimeString(),
+        "on"
+      );
+    } catch (err) {
+      setSaveStatus(
+        "Local best saved · leaderboard sync failed (" +
+          (err.message || err) +
+          ")",
+        "warn"
+      );
+    } finally {
+      sheetsSyncInFlight = false;
+      if (pendingSheetsSync) {
+        pendingSheetsSync = false;
+        scheduleSheetsSync();
+      }
+    }
   }
 
   function updateAbsoluteScoreUI() {
@@ -3582,27 +3922,49 @@
     const st = document.getElementById("absScoreStatus");
     if (!el) return;
     const dps = absoluteDeviceScore();
+    updateSustainedTracking(dps);
     const active =
       metrics.cpuOpsPerSec > 0 ||
       metrics.gpuFps > 0 ||
       metrics.storageMBps > 0 ||
       metrics.networkMbps > 0;
+
     if (!active && dps.total === 0) {
-      el.textContent = "—";
-      if (br) {
+      el.textContent =
+        bestScoreRecord && bestScoreRecord.score
+          ? formatDps(bestScoreRecord.score)
+          : "—";
+      if (br && bestScoreRecord && bestScoreRecord.breakdown) {
+        const b = bestScoreRecord.breakdown;
         br.innerHTML =
-          "<span>CPU —</span><span>GPU —</span><span>I/O —</span><span>Thermal —</span>";
+          "<span>CPU <strong>" +
+          (b.cpu || "—") +
+          "</strong></span>" +
+          "<span>GPU <strong>" +
+          (b.gpu || "—") +
+          "</strong></span>" +
+          "<span>I/O <strong>" +
+          (b.io || "—") +
+          "</strong></span>" +
+          "<span>Thermal <strong>" +
+          (b.thermal || "—") +
+          "</strong></span>";
       }
       if (st) {
         st.textContent =
           (bestScoreRecord && bestScoreRecord.score
-            ? "Best on this device: " + bestScoreRecord.score + " DPS · "
-            : "") + "Enable CPU/GPU or run a profile";
+            ? "Best " +
+              bestScoreRecord.score +
+              " peak · sustained " +
+              (bestScoreRecord.sustainedScore || "—") +
+              " · "
+            : "") + "Tracking every 0.5s — enable CPU/GPU or run a profile";
         st.className = "status";
       }
       return;
     }
-    el.textContent = String(dps.total);
+
+    el.textContent = formatDps(dps.total);
     if (br) {
       br.innerHTML =
         "<span>CPU <strong>" +
@@ -3618,22 +3980,29 @@
         dps.thermalPts +
         "</strong></span>";
     }
-    persistBestScore(dps);
-    if (st) {
-      st.textContent =
-        "Live DPS " +
-        dps.total +
-        (bestScoreRecord && bestScoreRecord.score
-          ? " · best " + bestScoreRecord.score
-          : "") +
-        " · CPU " +
-        dps.cpuMops.toFixed(1) +
-        " Mops · GPU " +
-        dps.gpuFps.toFixed(0) +
-        " fps";
-      st.className = "status on";
-    }
+    // fire and forget async persist
+    persistBestScore(dps).then((isNewBest) => {
+      if (st) {
+        const th = throttlePctFromEfficiency();
+        st.textContent =
+          "Live " +
+          dps.total +
+          " · peak " +
+          peakDpsSession +
+          " · sust " +
+          (sustainedDps(60) || "—") +
+          (th != null ? " · throttle " + th.toFixed(0) + "%" : "") +
+          (isNewBest ? " · NEW BEST" : "") +
+          " · 0.5s poll";
+        st.className = "status on";
+      }
+    });
   }
+
+  // Continuous DPS track + auto-save (independent of telemetry interval)
+  // Continuous DPS track + auto-save (independent of telemetry interval)
+  setInterval(updateAbsoluteScoreUI, 500);
+  setTimeout(updateAbsoluteScoreUI, 200);
 
 
   function startTelemetry() {
@@ -5541,24 +5910,19 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
 
-  document.getElementById("submitScoreBtn")?.addEventListener("click", () => {
+  document.getElementById("submitScoreBtn")?.addEventListener("click", async () => {
     updateAbsoluteScoreUI();
     const dps = absoluteDeviceScore();
-    if (dps.total > 0) persistBestScore(dps);
-    const best = bestScoreRecord;
-    if (!best || !best.score) {
-      const st = document.getElementById("absScoreStatus");
-      if (st) {
-        st.textContent = "No score yet — run CPU/GPU stress first";
-        st.className = "status warn";
-      }
+    if (dps.total > 0) await persistBestScore(dps);
+    if (!bestScoreRecord || !bestScoreRecord.score) {
+      setSaveStatus("No score yet — run CPU/GPU stress first", "warn");
       return;
     }
-    window.location.href = "leaderboard.html";
+    await syncBestToSheets(true);
   });
 
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "36";
+  const BUILD_ID = "39";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
