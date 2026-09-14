@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0a0f" />
+  <title>Leaderboard — Device Stress Tester</title>
+  <link rel="stylesheet" href="styles.css?v=35" />
+  <style>
+    .lb-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    .lb-table th, .lb-table td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+    .lb-table th { color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+    .lb-table tr:hover td { background: var(--input-bg); }
+    .lb-rank { font-weight: 700; color: var(--accent); width: 2.5rem; }
+    .lb-score { font-weight: 700; font-variant-numeric: tabular-nums; }
+    .lb-meta { color: var(--muted); font-size: 0.75rem; }
+    .lb-you { outline: 1px solid var(--accent); border-radius: 8px; }
+    .lb-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .lb-form input[type="text"] {
+      flex: 1; min-width: 140px; padding: 10px 12px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--input-bg); color: var(--text);
+    }
+  </style>
+  <script src="config.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="header-row">
+        <h1>Leaderboard</h1>
+        <a class="theme-btn" href="index.html" style="text-decoration:none">← Tester</a>
+      </div>
+      <p class="subtitle">Top 100 Device Performance Scores · refreshes every 60s</p>
+    </header>
+
+    <section class="card card-span-all">
+      <p class="hint" id="lbModeHint">Checking backend…</p>
+      <p class="status" id="lbStatus">Loading…</p>
+      <div class="lb-form">
+        <input type="text" id="lbName" maxlength="24" placeholder="Your name / handle" />
+        <button type="button" class="export-btn" id="lbSubmit">Submit my best score</button>
+        <button type="button" class="export-btn" id="lbRefresh">Refresh</button>
+      </div>
+      <p class="hint" style="margin-top:8px">
+        Run stress on the tester first so a best DPS is saved. Global board uses Google Sheets when
+        <code>config.js</code> has <code>sheetsLeaderboardUrl</code> set (see <code>sheets-leaderboard.gs</code>).
+      </p>
+    </section>
+
+    <section class="card card-span-all">
+      <h2>Top 100</h2>
+      <table class="lb-table">
+        <thead>
+          <tr><th>#</th><th>Name</th><th>Score</th><th>Device</th><th>When</th></tr>
+        </thead>
+        <tbody id="lbBody">
+          <tr><td colspan="5" class="lb-meta">No entries yet</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer class="card-span-all">
+      <p class="small">Device Stress Tester · DPS = weighted CPU + GPU + I/O + thermal hold</p>
+    </footer>
+  </div>
+  <script>
+(function () {
+  const STORAGE_KEY = "dst-leaderboard-v1";
+  const BEST_KEY = "dst-best-score-v1";
+  const MAX = 100;
+  const cfg = window.DST_CONFIG || {};
+  const SHEETS_URL = (cfg.sheetsLeaderboardUrl || "").trim();
+  const useSheets = /^https:\/\/script\.google\.com\//.test(SHEETS_URL);
+
+  let remoteEntries = null; // null = not loaded yet
+
+  function loadLocalBoard() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function saveLocalBoard(arr) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(arr.slice(0, MAX)));
+  }
+
+  function getBest() {
+    try {
+      const raw = localStorage.getItem(BEST_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function modeHint() {
+    const el = document.getElementById("lbModeHint");
+    if (!el) return;
+    if (useSheets) {
+      el.innerHTML =
+        "<strong>Global board (Google Sheets)</strong> — scores are shared via your Apps Script web app.";
+    } else {
+      el.innerHTML =
+        "<strong>Local board</strong> (this browser only). To go global: create a Sheet, deploy <code>sheets-leaderboard.gs</code> as a Web App, put the URL in <code>config.js</code> → <code>sheetsLeaderboardUrl</code>.";
+    }
+  }
+
+  function currentBoard() {
+    if (useSheets && remoteEntries) {
+      return remoteEntries.slice().sort((a, b) => b.score - a.score).slice(0, MAX);
+    }
+    return loadLocalBoard().sort((a, b) => b.score - a.score).slice(0, MAX);
+  }
+
+  function render() {
+    const board = currentBoard();
+    const body = document.getElementById("lbBody");
+    const status = document.getElementById("lbStatus");
+    const best = getBest();
+    if (!board.length) {
+      body.innerHTML =
+        '<tr><td colspan="5" class="lb-meta">No entries yet — submit a score</td></tr>';
+    } else {
+      body.innerHTML = board
+        .map((e, i) => {
+          const you = best && e.id === best.id ? ' class="lb-you"' : "";
+          const when = e.at ? new Date(e.at).toLocaleString() : "—";
+          return (
+            "<tr" +
+            you +
+            ">" +
+            '<td class="lb-rank">' +
+            (i + 1) +
+            "</td>" +
+            "<td>" +
+            escapeHtml(e.name || "Anon") +
+            (you ? " <span class='lb-meta'>(you)</span>" : "") +
+            "</td>" +
+            '<td class="lb-score">' +
+            Number(e.score).toFixed(0) +
+            "</td>" +
+            '<td class="lb-meta">' +
+            escapeHtml(e.device || "") +
+            "</td>" +
+            '<td class="lb-meta">' +
+            when +
+            "</td>" +
+            "</tr>"
+          );
+        })
+        .join("");
+    }
+    const rank = best ? board.findIndex((e) => e.id === best.id) + 1 : 0;
+    status.textContent =
+      (best
+        ? "Your best: " + Number(best.score).toFixed(0) + " DPS" + (rank ? " · rank #" + rank : "")
+        : "No score on this device yet") +
+      " · " +
+      board.length +
+      " entries · " +
+      (useSheets ? "Sheets" : "local") +
+      " · " +
+      new Date().toLocaleTimeString();
+    status.className = "status on";
+  }
+
+  async function fetchRemote() {
+    if (!useSheets) {
+      remoteEntries = null;
+      render();
+      return;
+    }
+    try {
+      const res = await fetch(SHEETS_URL + "?action=list", {
+        method: "GET",
+        redirect: "follow",
+      });
+      const data = await res.json();
+      if (data && data.ok && Array.isArray(data.entries)) {
+        remoteEntries = data.entries;
+      } else {
+        throw new Error((data && data.error) || "Bad response");
+      }
+    } catch (err) {
+      const status = document.getElementById("lbStatus");
+      status.textContent = "Sheets fetch failed: " + (err.message || err) + " — showing local fallback";
+      status.className = "status warn";
+      remoteEntries = loadLocalBoard();
+    }
+    render();
+  }
+
+  async function submit() {
+    const best = getBest();
+    if (!best || !best.score) {
+      alert("No score saved yet. Open the tester, run CPU/GPU stress (or a profile), then come back.");
+      return;
+    }
+    const name = (document.getElementById("lbName").value || "").trim() || "Anon";
+    const entry = {
+      id: best.id,
+      name: name.slice(0, 24),
+      score: best.score,
+      device: best.device || "",
+      at: new Date().toISOString(),
+      breakdown: best.breakdown || null,
+    };
+
+    try {
+      localStorage.setItem(BEST_KEY, JSON.stringify({ ...best, name: entry.name }));
+    } catch (_) {}
+
+    if (useSheets) {
+      const status = document.getElementById("lbStatus");
+      status.textContent = "Submitting to Google Sheets…";
+      status.className = "status on";
+      try {
+        // text/plain avoids a CORS preflight against Apps Script
+        const res = await fetch(SHEETS_URL, {
+          method: "POST",
+          body: JSON.stringify({ action: "submit", ...entry }),
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          redirect: "follow",
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "Submit failed");
+        remoteEntries = data.entries || remoteEntries;
+        render();
+        status.textContent =
+          "Submitted · rank #" + (data.rank || "?") + " · " + new Date().toLocaleTimeString();
+        status.className = "status on";
+      } catch (err) {
+        // Still save locally
+        const board = loadLocalBoard().filter((e) => e.id !== entry.id);
+        board.push(entry);
+        board.sort((a, b) => b.score - a.score);
+        saveLocalBoard(board);
+        status.textContent = "Sheets submit failed (" + (err.message || err) + ") — saved locally";
+        status.className = "status warn";
+        render();
+      }
+      return;
+    }
+
+    const board = loadLocalBoard().filter((e) => e.id !== entry.id);
+    board.push(entry);
+    board.sort((a, b) => b.score - a.score);
+    saveLocalBoard(board);
+    render();
+  }
+
+  document.getElementById("lbSubmit").addEventListener("click", submit);
+  document.getElementById("lbRefresh").addEventListener("click", () => {
+    if (useSheets) fetchRemote();
+    else render();
+  });
+
+  modeHint();
+  if (useSheets) fetchRemote();
+  else render();
+  setInterval(() => {
+    if (useSheets) fetchRemote();
+    else render();
+  }, 60_000);
+})();
+  </script>
+</body>
+</html>
