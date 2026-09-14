@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -39,7 +40,7 @@
     html.boot-stealth.boot-stealth-docs::after { background: #fafafa; }
     html.boot-stealth.boot-stealth-terminal::after { background: #0c0c0c; }
   </style>
-  <link rel="stylesheet" href="styles.css?v=39" />
+  <link rel="stylesheet" href="styles.css?v=40" />
 </head>
 <body>
   <div class="app">
@@ -50,7 +51,7 @@
         <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
         <button type="button" id="stealthToggle" class="theme-btn" aria-label="Toggle stealth mode">Stealth</button>
       </div>
-      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v39</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v40</span></p>
     </header>
 
     <!-- Absolute device score -->
@@ -135,6 +136,7 @@
         <button type="button" class="preset-btn" id="presetQuick">Quick Burst<br /><span>1 min</span></button>
         <button type="button" class="preset-btn" id="presetEndurance">Thermal Endurance<br /><span>15 min</span></button>
         <button type="button" class="preset-btn preset-btn-danger" id="presetTorture">Torture Test<br /><span>until abort</span></button>
+        <button type="button" class="preset-btn" id="presetBenchmark">Benchmark<br /><span>leaderboard · 3 min</span></button>
         <button type="button" class="preset-btn preset-btn-max" id="presetMax">MAX<br /><span>full stack</span></button>
       </div>
       <p class="status" id="presetStatus">Idle — pick a profile or use individual toggles</p>
@@ -150,7 +152,7 @@
         <p id="spawnBarText">Browser blocked extra tabs.</p>
         <button type="button" class="export-btn" id="spawnNextBtn">Open next tab</button>
       </div>
-      <p class="hint">Quick / endurance / torture / max. URL: <code>#profile=torture&amp;duration=300</code>. Multi-tab: browsers usually allow only <strong>one</strong> popup per click — use <strong>Open next tab</strong> repeatedly (or the bar on each new tab) to reach your count.</p>
+      <p class="hint">Quick / endurance / torture / benchmark / max. URL: <code>#profile=torture&amp;duration=300</code>. Multi-tab: browsers usually allow only <strong>one</strong> popup per click — use <strong>Open next tab</strong> repeatedly (or the bar on each new tab) to reach your count.</p>
     </section>
 
     <!-- Thermal / performance telemetry -->
@@ -376,7 +378,7 @@
         </label>
         <label id="goalFpsControl">
           Goal FPS <span id="goalFpsValue">15</span>
-          <input type="range" id="goalFpsSlider" min="1" max="60" value="15" step="1" />
+          <input type="range" id="goalFpsSlider" min="5" max="60" value="15" step="1" />
         </label>
       </div>
       <canvas id="fractalCanvas" width="400" height="400"></canvas>
@@ -801,6 +803,6 @@ $ _</pre>
   </div>
 
   <script src="config.js"></script>
-  <script src="app.js?v=39"></script>
+  <script src="app.js?v=40"></script>
 </body>
 </html>
