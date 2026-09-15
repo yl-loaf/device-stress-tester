@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -40,7 +39,7 @@
     html.boot-stealth.boot-stealth-docs::after { background: #fafafa; }
     html.boot-stealth.boot-stealth-terminal::after { background: #0c0c0c; }
   </style>
-  <link rel="stylesheet" href="styles.css?v=40" />
+  <link rel="stylesheet" href="styles.css?v=42" />
 </head>
 <body>
   <div class="app">
@@ -51,7 +50,7 @@
         <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
         <button type="button" id="stealthToggle" class="theme-btn" aria-label="Toggle stealth mode">Stealth</button>
       </div>
-      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v40</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v42</span> · <span id="viewCounter" class="view-counter" title="Total page views">views …</span></p>
     </header>
 
     <!-- Absolute device score -->
@@ -71,6 +70,7 @@
       </div>
       <div class="export-row" style="margin-top:10px">
         <a class="export-btn" href="leaderboard.html" style="text-align:center;text-decoration:none">Leaderboard</a>
+        <button type="button" class="export-btn" id="shareScoreBtn">Share high score</button>
         <button type="button" class="export-btn" id="submitScoreBtn">Force sync leaderboard</button>
       </div>
       <p class="status" id="absScoreStatus" style="margin-top:8px">Tracking DPS every 0.5s · local auto-save on new best</p>
@@ -803,6 +803,6 @@ $ _</pre>
   </div>
 
   <script src="config.js"></script>
-  <script src="app.js?v=40"></script>
+  <script src="app.js?v=42"></script>
 </body>
 </html>
