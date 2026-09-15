@@ -904,3 +904,11 @@ html.stealth-on .app { /* stress UI still runs underneath */ }
   color: var(--muted);
 }
 .abs-score-breakdown strong { color: var(--text); }
+
+
+.view-counter {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
