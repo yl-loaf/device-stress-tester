@@ -6003,6 +6003,72 @@
 
   // ---------- Auto-update (detect new deploy without hard refresh) ----------
 
+  function buildShareChallengeText() {
+    const best = bestScoreRecord;
+    if (!best || !best.score) return null;
+    const score = formatDps(best.score);
+    const device = best.device || deviceLabelShort();
+    const sust =
+      best.sustainedScore && best.sustainedScore > 0
+        ? " (sustained " + formatDps(best.sustainedScore) + ")"
+        : "";
+    const site =
+      location.origin + location.pathname.replace(/index\.html$/i, "");
+    const lb = site.replace(/\/?$/, "/") + "leaderboard.html";
+    const lines = [
+      "Think you can beat my " + score + " DPS" + sust + "?",
+      "My setup: " + device,
+      "",
+      "I dare you to run the Device Stress Tester Benchmark and prove it 🔥",
+      site + (site.includes("?") ? "" : "") + "#profile=benchmark",
+      "Leaderboard: " + lb,
+    ];
+    return lines.join("\n");
+  }
+
+  document.getElementById("shareScoreBtn")?.addEventListener("click", async () => {
+    updateAbsoluteScoreUI();
+    const dps = absoluteDeviceScore();
+    if (dps.total > 0) await persistBestScore(dps);
+    const text = buildShareChallengeText();
+    const btn = document.getElementById("shareScoreBtn");
+    if (!text) {
+      setSaveStatus("No high score yet — run Benchmark or stress first", "warn");
+      return;
+    }
+    const shareData = {
+      title: "Beat my Device Stress Tester score",
+      text: text,
+    };
+    try {
+      if (navigator.share) {
+        await navigator.share(shareData);
+        if (btn) {
+          btn.textContent = "Shared!";
+          setTimeout(() => {
+            btn.textContent = "Share high score";
+          }, 1500);
+        }
+        setSaveStatus("Challenge shared", "on");
+        return;
+      }
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      if (btn) {
+        btn.textContent = "Copied challenge!";
+        setTimeout(() => {
+          btn.textContent = "Share high score";
+        }, 1800);
+      }
+      setSaveStatus("Challenge copied — paste it anywhere", "on");
+    } catch (_) {
+      setSaveStatus("Share failed — copy blocked by browser", "warn");
+    }
+  });
+
   document.getElementById("submitScoreBtn")?.addEventListener("click", async () => {
     updateAbsoluteScoreUI();
     const dps = absoluteDeviceScore();
@@ -6014,8 +6080,89 @@
     await syncBestToSheets(true);
   });
 
+
+  // ---------- Global view counter (Google Sheets via config.js) ----------
+  function getSheetsUrl() {
+    try {
+      return String(
+        (window.DST_CONFIG && window.DST_CONFIG.sheetsLeaderboardUrl) || ""
+      ).trim();
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function formatViews(n) {
+    if (n == null || !isFinite(n)) return "…";
+    const x = Math.floor(Number(n));
+    if (x >= 1e6) return (x / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+    if (x >= 1e4) return (x / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
+    return x.toLocaleString();
+  }
+
+  function setViewCounterDisplay(n) {
+    const el = document.getElementById("viewCounter");
+    if (!el) return;
+    el.textContent = formatViews(n) + " views";
+    el.title = Number(n).toLocaleString() + " total page views";
+  }
+
+  async function trackPageView() {
+    const url = getSheetsUrl();
+    const el = document.getElementById("viewCounter");
+    if (!url || !/^https:\/\/script\.google\.com\//.test(url)) {
+      if (el) el.textContent = "";
+      return;
+    }
+    // One counted hit per browser tab session
+    let already = false;
+    try {
+      already = sessionStorage.getItem("dst-view-hit") === "1";
+    } catch (_) {}
+
+    try {
+      if (already) {
+        const res = await fetch(url + "?action=views", {
+          method: "GET",
+          redirect: "follow",
+        });
+        const data = await res.json();
+        if (data && data.ok && data.views != null) setViewCounterDisplay(data.views);
+        return;
+      }
+      // Prefer POST to avoid casual prefetch counting; GET ?action=hit also works
+      const res = await fetch(url, {
+        method: "POST",
+        body: JSON.stringify({ action: "hit" }),
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        redirect: "follow",
+      });
+      const data = await res.json();
+      if (data && data.ok && data.views != null) {
+        setViewCounterDisplay(data.views);
+        try {
+          sessionStorage.setItem("dst-view-hit", "1");
+        } catch (_) {}
+      }
+    } catch (_) {
+      // Fallback: read-only
+      try {
+        const res = await fetch(url + "?action=views", {
+          method: "GET",
+          redirect: "follow",
+        });
+        const data = await res.json();
+        if (data && data.ok && data.views != null) setViewCounterDisplay(data.views);
+      } catch (__) {
+        if (el) el.textContent = "";
+      }
+    }
+  }
+
+  setTimeout(trackPageView, 600);
+
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "40";
+  const BUILD_ID = "42";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
