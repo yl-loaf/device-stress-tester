@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#0a0a0f" />
   <title>Leaderboard — Device Stress Tester</title>
-  <link rel="stylesheet" href="styles.css?v=40" />
+  <link rel="stylesheet" href="styles.css?v=42" />
   <style>
     .lb-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
     .lb-table th, .lb-table td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -55,7 +55,7 @@
         <h1>Leaderboard</h1>
         <a class="theme-btn" href="index.html" style="text-decoration:none">← Tester</a>
       </div>
-      <p class="subtitle">Top 100 · filters · peak vs sustained · refreshes every 60s</p>
+      <p class="subtitle">Top 100 · filters · peak vs sustained · refreshes every 60s · <span id="viewCounter" class="view-counter">views …</span></p>
     </header>
 
     <section class="card card-span-all">
@@ -74,6 +74,7 @@
       <div class="lb-form">
         <input type="text" id="lbName" maxlength="24" placeholder="Your name / handle" />
         <button type="button" class="export-btn" id="lbSubmit">Submit my best score</button>
+        <button type="button" class="export-btn" id="lbShare">Share my high score</button>
         <button type="button" class="export-btn" id="lbRefresh">Refresh</button>
       </div>
       <p class="hint" style="margin-top:8px">
@@ -366,6 +367,15 @@
       const data = await res.json();
       if (data && data.ok && Array.isArray(data.entries)) {
         remoteEntries = data.entries;
+        if (data.views != null) {
+          const vc = document.getElementById("viewCounter");
+          if (vc) {
+            const x = Math.floor(Number(data.views));
+            vc.textContent =
+              (x >= 1e4 ? (x / 1e3).toFixed(1).replace(/\.0$/, "") + "k" : x.toLocaleString()) +
+              " views";
+          }
+        }
       } else {
         throw new Error((data && data.error) || "Bad response");
       }
@@ -433,6 +443,47 @@
   }
 
   document.getElementById("lbSubmit").addEventListener("click", submit);
+  document.getElementById("lbShare")?.addEventListener("click", async () => {
+    const best = getBest();
+    if (!best || !best.score) {
+      alert("No high score on this device yet.");
+      return;
+    }
+    function fmt(n) {
+      if (n == null || !isFinite(n)) return "—";
+      const x = Math.round(Number(n) * 1000) / 1000;
+      if (Math.abs(x - Math.round(x)) < 1e-9) return String(Math.round(x));
+      return x.toFixed(3);
+    }
+    const site = location.origin + location.pathname.replace(/leaderboard\.html$/i, "");
+    const text = [
+      "Think you can beat my " + fmt(best.score) + " DPS?",
+      "My setup: " + (best.device || "unknown device"),
+      "",
+      "Run the Device Stress Tester Benchmark and prove it 🔥",
+      site + "#profile=benchmark",
+      "Leaderboard: " + location.href.split("#")[0],
+    ].join("\n");
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: "Beat my stress-test score", text: text });
+        return;
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      const b = document.getElementById("lbShare");
+      if (b) {
+        b.textContent = "Copied!";
+        setTimeout(() => { b.textContent = "Share my high score"; }, 1600);
+      }
+    } catch (_) {
+      alert("Could not share/copy");
+    }
+  });
+
   document.getElementById("lbRefresh").addEventListener("click", () => {
     if (useSheets) fetchRemote();
     else render();
