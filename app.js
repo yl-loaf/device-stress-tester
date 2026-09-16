@@ -32,6 +32,7 @@
     zeroGc: 1.5,
     hdr: 2.5,
     audioDsp: 1.8,
+    codecs: 3.5, // HW video encode/decode blocks
   };
 
   const active = {
@@ -61,6 +62,7 @@
     zeroGc: false,
     hdr: false,
     audioDsp: false,
+    codecs: false,
   };
 
   const metrics = {
@@ -2620,6 +2622,283 @@
   let wgComputeDevice = null;
   let wgComputeTimer = null;
 
+
+  // ---------- WebCodecs VideoEncoder / VideoDecoder stress ----------
+  let codecsEncoder = null;
+  let codecsDecoder = null;
+  let codecsCanvas = null;
+  let codecsCtx = null;
+  let codecsTimer = null;
+  let codecsFrameIndex = 0;
+  let codecsEncOk = 0;
+  let codecsDecOk = 0;
+  let codecsEncErr = 0;
+  let codecsDecErr = 0;
+  let codecsPendingDecodes = 0;
+  let codecsHwEnc = null;
+  let codecsHwDec = null;
+
+  function parseCodecsResolution() {
+    const raw =
+      document.getElementById("codecsResolution")?.value || "1920x1080";
+    const m = String(raw).match(/(\d+)\s*x\s*(\d+)/i);
+    let w = m ? parseInt(m[1], 10) : 1920;
+    let h = m ? parseInt(m[2], 10) : 1080;
+    // even dimensions required by many codecs
+    w = Math.max(64, w - (w % 2));
+    h = Math.max(64, h - (h % 2));
+    return { w, h };
+  }
+
+  function stopCodecsLoop() {
+    if (codecsTimer) {
+      clearTimeout(codecsTimer);
+      codecsTimer = null;
+    }
+    try {
+      if (codecsEncoder) {
+        try {
+          codecsEncoder.close();
+        } catch (_) {}
+      }
+    } catch (_) {}
+    try {
+      if (codecsDecoder) {
+        try {
+          codecsDecoder.close();
+        } catch (_) {}
+      }
+    } catch (_) {}
+    codecsEncoder = null;
+    codecsDecoder = null;
+    codecsFrameIndex = 0;
+    codecsPendingDecodes = 0;
+    active.codecs = false;
+  }
+
+  function codecsStatusLine(extra) {
+    const el = document.getElementById("codecsStatus");
+    if (!el) return;
+    const hw =
+      "enc " +
+      (codecsHwEnc == null ? "?" : codecsHwEnc ? "HW" : "SW") +
+      " · dec " +
+      (codecsHwDec == null ? "?" : codecsHwDec ? "HW" : "SW");
+    el.textContent =
+      (extra || "Running") +
+      " · " +
+      hw +
+      " · enc " +
+      codecsEncOk +
+      " · dec " +
+      codecsDecOk +
+      (codecsEncErr || codecsDecErr
+        ? " · err " + (codecsEncErr + codecsDecErr)
+        : "");
+    el.className = "status on";
+  }
+
+  async function setCodecs(on) {
+    const status = document.getElementById("codecsStatus");
+    stopCodecsLoop();
+    codecsEncOk = codecsDecOk = codecsEncErr = codecsDecErr = 0;
+    codecsHwEnc = codecsHwDec = null;
+
+    if (!on) {
+      if (status) {
+        status.textContent = "Off";
+        status.className = "status";
+      }
+      updatePower();
+      return;
+    }
+
+    if (typeof VideoEncoder === "undefined" || typeof VideoDecoder === "undefined") {
+      if (status) {
+        status.textContent = "WebCodecs not supported in this browser";
+        status.className = "status warn";
+      }
+      document.getElementById("codecsToggle").checked = false;
+      updatePower();
+      return;
+    }
+
+    const { w, h } = parseCodecsResolution();
+    codecsCanvas = document.createElement("canvas");
+    codecsCanvas.width = w;
+    codecsCanvas.height = h;
+    codecsCtx = codecsCanvas.getContext("2d", { alpha: false, desynchronized: true });
+
+    const codecList = [
+      "avc1.42E01E", // baseline H.264 widely HW-accelerated
+      "avc1.4D401F",
+      "vp8",
+      "vp09.00.10.08",
+    ];
+
+    let config = null;
+    let codecUsed = null;
+    for (const codec of codecList) {
+      const cfg = {
+        codec,
+        width: w,
+        height: h,
+        bitrate: Math.min(50_000_000, w * h * 8),
+        framerate: 60,
+        latencyMode: "realtime",
+        avc: codec.indexOf("avc1") === 0 ? { format: "avc" } : undefined,
+        hardwareAcceleration: "prefer-hardware",
+      };
+      try {
+        const support = await VideoEncoder.isConfigSupported(cfg);
+        if (support && support.supported) {
+          config = support.config || cfg;
+          codecUsed = codec;
+          break;
+        }
+      } catch (_) {}
+    }
+
+    if (!config) {
+      if (status) {
+        status.textContent = "No supported encode config for " + w + "×" + h;
+        status.className = "status warn";
+      }
+      document.getElementById("codecsToggle").checked = false;
+      updatePower();
+      return;
+    }
+
+    try {
+      codecsDecoder = new VideoDecoder({
+        output: (frame) => {
+          codecsDecOk++;
+          try {
+            frame.close();
+          } catch (_) {}
+          codecsPendingDecodes = Math.max(0, codecsPendingDecodes - 1);
+        },
+        error: () => {
+          codecsDecErr++;
+        },
+      });
+
+      const decCfg = {
+        codec: codecUsed,
+        hardwareAcceleration: "prefer-hardware",
+        optimizeForLatency: true,
+      };
+      // coded size hints help some implementations
+      if (codecUsed.indexOf("avc1") === 0 || codecUsed.indexOf("vp09") === 0) {
+        decCfg.codedWidth = w;
+        decCfg.codedHeight = h;
+      }
+      try {
+        const dsup = await VideoDecoder.isConfigSupported(decCfg);
+        if (dsup && dsup.supported) {
+          codecsDecoder.configure(dsup.config || decCfg);
+        } else {
+          codecsDecoder.configure(decCfg);
+        }
+      } catch (_) {
+        codecsDecoder.configure(decCfg);
+      }
+
+      codecsEncoder = new VideoEncoder({
+        output: (chunk, meta) => {
+          codecsEncOk++;
+          if (meta && meta.decoderConfig && codecsDecoder && codecsDecoder.state !== "closed") {
+            try {
+              codecsDecoder.configure({
+                ...meta.decoderConfig,
+                hardwareAcceleration: "prefer-hardware",
+              });
+            } catch (_) {}
+          }
+          if (
+            codecsDecoder &&
+            codecsDecoder.state === "configured" &&
+            codecsPendingDecodes < 8
+          ) {
+            try {
+              codecsPendingDecodes++;
+              codecsDecoder.decode(chunk);
+            } catch (_) {
+              codecsDecErr++;
+              codecsPendingDecodes = Math.max(0, codecsPendingDecodes - 1);
+            }
+          }
+        },
+        error: () => {
+          codecsEncErr++;
+        },
+      });
+
+      codecsEncoder.configure(config);
+      active.codecs = true;
+      codecsStatusLine("Running " + codecUsed + " " + w + "×" + h);
+      updatePower();
+
+      // Infer HW vs SW after a few frames when possible (best-effort via encodeQueue)
+      const paintAndEncode = () => {
+        if (!active.codecs || !codecsEncoder || codecsEncoder.state === "closed") {
+          return;
+        }
+        try {
+          const t = codecsFrameIndex * 0.07;
+          const ctx = codecsCtx;
+          ctx.fillStyle = "#0a0a12";
+          ctx.fillRect(0, 0, w, h);
+          // Moving high-contrast geometry → hard for codecs / keeps HW busy
+          for (let i = 0; i < 18; i++) {
+            ctx.fillStyle =
+              "hsl(" + ((i * 37 + codecsFrameIndex * 3) % 360) + " 90% 50%)";
+            const x = (Math.sin(t + i) * 0.5 + 0.5) * (w - 80);
+            const y = (Math.cos(t * 1.3 + i * 0.7) * 0.5 + 0.5) * (h - 80);
+            ctx.fillRect(x, y, 70, 70);
+          }
+          ctx.fillStyle = "#fff";
+          ctx.font = "bold 28px sans-serif";
+          ctx.fillText("DST WebCodecs " + codecsFrameIndex, 24, 48);
+
+          const frame = new VideoFrame(codecsCanvas, {
+            timestamp: Math.round(codecsFrameIndex * (1e6 / 60)),
+            duration: Math.round(1e6 / 60),
+          });
+          const keyFrame = codecsFrameIndex % 30 === 0;
+          if (codecsEncoder.encodeQueueSize < 6) {
+            codecsEncoder.encode(frame, { keyFrame });
+          }
+          frame.close();
+          codecsFrameIndex++;
+          if (codecsFrameIndex % 30 === 0) codecsStatusLine("Running " + codecUsed + " " + w + "×" + h);
+        } catch (_) {
+          codecsEncErr++;
+        }
+        codecsTimer = setTimeout(paintAndEncode, 1000 / 60);
+      };
+      paintAndEncode();
+    } catch (err) {
+      stopCodecsLoop();
+      if (status) {
+        status.textContent = "Failed: " + (err.message || err);
+        status.className = "status warn";
+      }
+      document.getElementById("codecsToggle").checked = false;
+      updatePower();
+    }
+  }
+
+  document.getElementById("codecsToggle")?.addEventListener("change", (e) => {
+    setCodecs(e.target.checked);
+  });
+  document.getElementById("codecsResolution")?.addEventListener("change", () => {
+    if (document.getElementById("codecsToggle")?.checked) {
+      setCodecs(false);
+      setCodecs(true);
+    }
+  });
+
   async function setWebgpuCompute(on) {
     const status = document.getElementById("webgpuComputeStatus");
     if (on) {
@@ -4595,6 +4874,7 @@
     setToggle("zeroGcToggle", false);
     setToggle("hdrToggle", false);
     setToggle("audioDspToggle", false);
+    setToggle("codecsToggle", false);
     // Leave torch / void / tone / mic / isp / panel alone unless part of a preset
   }
 
@@ -4673,6 +4953,7 @@
         setToggle("gpuToggle", true);
         setToggle("storageToggle", true);
         setToggle("modemToggle", true);
+        setToggle("codecsToggle", true);
       });
       return true;
     }
@@ -4691,6 +4972,7 @@
         setToggle("storageToggle", true);
         setToggle("modemToggle", true);
         setToggle("ramToggle", true);
+        setToggle("codecsToggle", true);
       });
       return true;
     }
@@ -4729,6 +5011,7 @@
         setToggle("wasmToggle", true);
         setToggle("zeroGcToggle", true);
         setToggle("webgpuComputeToggle", true);
+        setToggle("codecsToggle", true);
         setToggle("downloadToggle", true);
         // avoid non-scoring noise
         setToggle("torchToggle", false);
@@ -4785,10 +5068,11 @@
           setToggle("gpuToggle", true);
           setToggle("webgpuComputeToggle", true);
           setToggle("webgpuDrawToggle", true);
+          setToggle("codecsToggle", true);
           setToggle("aiToggle", true);
           setToggle("hdrToggle", true);
           document.getElementById("presetStatus").textContent =
-            "MAX · full stack (WebGPU/AI/HDR/DSP) · until abort";
+            "MAX · full stack (WebGPU/WebCodecs/AI/HDR/DSP) · until abort";
           document.getElementById("presetStatus").className = "status on";
         }, 2500);
       });
@@ -5028,6 +5312,8 @@
     { p: "f_storp", id: "storagePattern", kind: "select" },
     { p: "f_modem", id: "modemToggle", kind: "toggle" },
     { p: "f_mods", id: "modemStreamsSlider", kind: "range", label: "modemStreamsValue" },
+    { p: "f_codecs", id: "codecsToggle", kind: "toggle" },
+    { p: "f_codecres", id: "codecsResolution", kind: "select" },
     { p: "f_wgc", id: "webgpuComputeToggle", kind: "toggle" },
     { p: "f_wgd", id: "webgpuDrawToggle", kind: "toggle" },
     { p: "f_wasm", id: "wasmToggle", kind: "toggle" },
@@ -5053,7 +5339,7 @@
     "keepAliveToggle", "stealthTabToggle", "blurCloseToggle",
     "micToggle", "toneToggle", "btToggle", "usbToggle",
     "torchToggle", "ispToggle", "panelToggle", "voidToggle", "hdrToggle",
-    "gpuToggle", "webgpuComputeToggle", "webgpuDrawToggle", "aiToggle",
+    "gpuToggle", "codecsToggle", "webgpuComputeToggle", "webgpuDrawToggle", "aiToggle",
   ];
 
   function collectFeatureParams() {
@@ -5427,6 +5713,7 @@
     setBluetooth(false);
     setUsb(false);
     setWebgpuCompute(false);
+    setCodecs(false);
     setWebgpuDraw(false);
     setWasm(false);
     setAi(false);
@@ -6174,6 +6461,12 @@
           .dispatchEvent(new Event("change", { bubbles: true }));
       }
     } catch (_) {}
+    try {
+      if (document.getElementById("codecsToggle")?.checked) {
+        document.getElementById("codecsToggle").checked = false;
+        setCodecs(false);
+      }
+    } catch (_) {}
   }
 
   function tryFreeMemoryHint() {
@@ -6614,8 +6907,162 @@
     if (file) importSettingsDstFile(file);
   });
 
+
+  // ---------- Multi-window / multi-tab sync (BroadcastChannel) ----------
+  const SYNC_CHANNEL_NAME = "dst-stress-sync-v1";
+  const syncTabId =
+    "t-" + Math.random().toString(36).slice(2, 9) + Date.now().toString(36);
+  let syncChannel = null;
+  const syncPeers = new Map(); // id -> lastSeen
+  let syncApplyingRemote = false;
+
+  function syncPeerCount() {
+    const now = Date.now();
+    for (const [id, ts] of [...syncPeers.entries()]) {
+      if (now - ts > 8000) syncPeers.delete(id);
+    }
+    return 1 + syncPeers.size; // include self
+  }
+
+  function updateSyncStatus(extra) {
+    const el = document.getElementById("syncStatus");
+    if (!el) return;
+    const n = syncPeerCount();
+    el.textContent =
+      (extra ? extra + " · " : "") +
+      n +
+      " tab" +
+      (n === 1 ? "" : "s") +
+      " in sync mesh · id " +
+      syncTabId.slice(0, 8);
+    el.className = "status on";
+  }
+
+  function syncBroadcast(msg) {
+    if (!syncChannel) return;
+    try {
+      syncChannel.postMessage({
+        ...msg,
+        from: syncTabId,
+        ts: Date.now(),
+      });
+    } catch (_) {}
+  }
+
+  function applySyncCommand(cmd, profile, duration) {
+    if (syncApplyingRemote) return;
+    syncApplyingRemote = true;
+    try {
+      if (cmd === "stop") {
+        try {
+          if (typeof stopHeavyLoads === "function") stopHeavyLoads();
+        } catch (_) {}
+        try {
+          if (typeof stopTelemetry === "function") stopTelemetry();
+        } catch (_) {}
+        try {
+          if (typeof abortPreset === "function") abortPreset("Sync stop");
+        } catch (_) {}
+        updateSyncStatus("Remote stop applied");
+      } else if (cmd === "start") {
+        const key = profile || "benchmark";
+        const dur =
+          duration != null && isFinite(Number(duration))
+            ? Number(duration)
+            : undefined;
+        if (typeof runProfile === "function") {
+          runProfile(key, dur);
+          updateSyncStatus("Remote start · " + key);
+        }
+      } else if (cmd === "pulse") {
+        // Brief synchronized load spike: ensure GPU+CPU on
+        try {
+          setToggle("cpuToggle", true);
+          setToggle("gpuToggle", true);
+        } catch (_) {}
+        updateSyncStatus("Sync pulse");
+      }
+    } finally {
+      setTimeout(() => {
+        syncApplyingRemote = false;
+      }, 300);
+    }
+  }
+
+  function initMultiWindowSync() {
+    if (typeof BroadcastChannel === "undefined") {
+      const el = document.getElementById("syncStatus");
+      if (el) {
+        el.textContent = "BroadcastChannel not supported in this browser";
+        el.className = "status warn";
+      }
+      return;
+    }
+    try {
+      syncChannel = new BroadcastChannel(SYNC_CHANNEL_NAME);
+    } catch (err) {
+      const el = document.getElementById("syncStatus");
+      if (el) {
+        el.textContent = "Sync channel failed: " + (err.message || err);
+        el.className = "status warn";
+      }
+      return;
+    }
+
+    syncChannel.onmessage = (ev) => {
+      const msg = ev.data;
+      if (!msg || !msg.from || msg.from === syncTabId) return;
+      syncPeers.set(msg.from, Date.now());
+
+      if (msg.type === "hello" || msg.type === "ping" || msg.type === "pong") {
+        if (msg.type === "ping") {
+          syncBroadcast({ type: "pong" });
+        }
+        updateSyncStatus(msg.type === "ping" ? "Ping received" : "Peer seen");
+        return;
+      }
+      if (msg.type === "cmd") {
+        applySyncCommand(msg.cmd, msg.profile, msg.duration);
+      }
+    };
+
+    // Announce presence
+    syncBroadcast({ type: "hello" });
+    setInterval(() => {
+      syncBroadcast({ type: "hello" });
+      updateSyncStatus();
+    }, 3000);
+    updateSyncStatus("Sync mesh ready");
+  }
+
+  document.getElementById("syncPingBtn")?.addEventListener("click", () => {
+    syncBroadcast({ type: "ping" });
+    updateSyncStatus("Ping sent");
+  });
+
+  document.getElementById("syncStartBtn")?.addEventListener("click", () => {
+    const profile =
+      document.getElementById("syncProfile")?.value || "benchmark";
+    // Local first, then peers
+    applySyncCommand("start", profile);
+    syncBroadcast({
+      type: "cmd",
+      cmd: "start",
+      profile,
+    });
+    updateSyncStatus("Broadcast start · " + profile);
+  });
+
+  document.getElementById("syncStopBtn")?.addEventListener("click", () => {
+    applySyncCommand("stop");
+    syncBroadcast({ type: "cmd", cmd: "stop" });
+    updateSyncStatus("Broadcast stop");
+  });
+
+  setTimeout(initMultiWindowSync, 200);
+
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "44";
+  const BUILD_ID = "46";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
