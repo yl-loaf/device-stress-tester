@@ -1492,6 +1492,7 @@
   }
 
   document.getElementById("gpuToggle").addEventListener("change", (e) => {
+    if (e.target.checked) memGpuStoppedByGuard = false;
     setGpu(e.target.checked);
   });
 
@@ -6081,6 +6082,179 @@
   });
 
 
+
+  // ---------- JS heap memory guard (performance.memory) ----------
+  let memProtectEnabled = true;
+  let memGpuStoppedByGuard = false;
+  let memLastWarnTs = 0;
+
+  function readJsHeap() {
+    try {
+      const m = performance.memory;
+      if (!m || !m.jsHeapSizeLimit) return null;
+      const used = m.usedJSHeapSize || 0;
+      const total = m.totalJSHeapSize || used;
+      const limit = m.jsHeapSizeLimit || 0;
+      if (!limit) return null;
+      return {
+        used,
+        total,
+        limit,
+        pct: used / limit,
+        pctTotal: total / limit,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function formatBytes(n) {
+    if (!n || !isFinite(n)) return "—";
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + " GB";
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + " MB";
+    if (n >= 1e3) return (n / 1e3).toFixed(0) + " KB";
+    return n + " B";
+  }
+
+  function updateMemoryStatus() {
+    const el = document.getElementById("memStatus");
+    const info = readJsHeap();
+    if (!el) return;
+    if (!info) {
+      el.textContent =
+        "Memory: not available in this browser (Chrome/Edge expose performance.memory)";
+      el.className = "status";
+      return;
+    }
+    const pct = (info.pct * 100).toFixed(1);
+    el.textContent =
+      "JS heap " +
+      formatBytes(info.used) +
+      " / " +
+      formatBytes(info.limit) +
+      " (" +
+      pct +
+      "%)" +
+      (memProtectEnabled ? " · guard ON @ 98%" : " · guard OFF") +
+      (memGpuStoppedByGuard ? " · GPU stopped by guard" : "");
+    if (info.pct >= 0.98) el.className = "status warn";
+    else if (info.pct >= 0.85) el.className = "status on";
+    else el.className = "status";
+  }
+
+  function stopGpuMemoryHeavy() {
+    // Fractal GPU + other GPU-heavy paths
+    try {
+      if (document.getElementById("gpuToggle")?.checked) {
+        document.getElementById("gpuToggle").checked = false;
+        setGpu(false);
+      }
+    } catch (_) {}
+    try {
+      if (document.getElementById("webgpuComputeToggle")?.checked) {
+        document.getElementById("webgpuComputeToggle").checked = false;
+        document
+          .getElementById("webgpuComputeToggle")
+          .dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    } catch (_) {}
+    try {
+      if (document.getElementById("webgpuDrawToggle")?.checked) {
+        document.getElementById("webgpuDrawToggle").checked = false;
+        document
+          .getElementById("webgpuDrawToggle")
+          .dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    } catch (_) {}
+    try {
+      if (document.getElementById("aiToggle")?.checked) {
+        document.getElementById("aiToggle").checked = false;
+        document
+          .getElementById("aiToggle")
+          .dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    } catch (_) {}
+  }
+
+  function tryFreeMemoryHint() {
+    try {
+      // Drop large canvas buffers if GPU is off
+      if (!active.gpu && canvas) {
+        // keep tiny canvas
+        if (canvas.width * canvas.height > 512 * 512) {
+          canvas.width = 64;
+          canvas.height = 64;
+        }
+      }
+    } catch (_) {}
+  }
+
+  function checkMemoryGuard() {
+    updateMemoryStatus();
+    if (!memProtectEnabled) return;
+    const info = readJsHeap();
+    if (!info) return;
+    if (info.pct < 0.98) return;
+
+    const gpuOn =
+      active.gpu ||
+      document.getElementById("gpuToggle")?.checked ||
+      document.getElementById("webgpuComputeToggle")?.checked ||
+      document.getElementById("webgpuDrawToggle")?.checked ||
+      document.getElementById("aiToggle")?.checked;
+
+    if (!gpuOn && !memGpuStoppedByGuard) return;
+
+    memGpuStoppedByGuard = true;
+    stopGpuMemoryHeavy();
+    tryFreeMemoryHint();
+
+    const now = Date.now();
+    if (now - memLastWarnTs > 4000) {
+      memLastWarnTs = now;
+      setSaveStatus(
+        "JS heap at " +
+          (info.pct * 100).toFixed(1) +
+          "% of limit — GPU stopped to avoid tab crash",
+        "warn"
+      );
+      const st = document.getElementById("gpuStatus");
+      if (st) {
+        st.textContent =
+          "Stopped — heap " +
+          (info.pct * 100).toFixed(1) +
+          "% (guard). Turn off auto-stop to override.";
+        st.className = "status warn";
+      }
+    }
+  }
+
+  // Poll heap while page is open
+  setInterval(checkMemoryGuard, 1000);
+  setTimeout(updateMemoryStatus, 300);
+
+  document.getElementById("memProtectToggle")?.addEventListener("change", (e) => {
+    memProtectEnabled = !!e.target.checked;
+    try {
+      localStorage.setItem("dst-mem-protect", memProtectEnabled ? "1" : "0");
+    } catch (_) {}
+    if (memProtectEnabled) {
+      memGpuStoppedByGuard = false;
+      setSaveStatus("Memory guard ON — GPU will stop at 98% JS heap", "on");
+    } else {
+      setSaveStatus("Memory guard OFF — GPU will not auto-stop", "warn");
+    }
+    updateMemoryStatus();
+  });
+
+  try {
+    if (localStorage.getItem("dst-mem-protect") === "0") {
+      memProtectEnabled = false;
+      const t = document.getElementById("memProtectToggle");
+      if (t) t.checked = false;
+    }
+  } catch (_) {}
+
   // ---------- Global view counter (Google Sheets via config.js) ----------
   function getSheetsUrl() {
     try {
@@ -6161,8 +6335,287 @@
 
   setTimeout(trackPageView, 600);
 
+
+  // ---------- Settings export (.dst) / import / reset ----------
+  const SETTINGS_LS_KEYS = [
+    "pst-theme",
+    "pst-pc-mode",
+    "pst-stealth-tab",
+    "pst-keep-alive",
+    "dst-mem-protect",
+    "dst-best-score-v1",
+  ];
+
+  function collectControlState() {
+    const controls = {};
+    document.querySelectorAll("input, select, textarea").forEach((el) => {
+      if (!el.id) return;
+      // skip file inputs
+      if (el.type === "file") return;
+      if (el.type === "checkbox") controls[el.id] = !!el.checked;
+      else controls[el.id] = el.value;
+    });
+    return controls;
+  }
+
+  function applyControlState(controls, opts) {
+    opts = opts || {};
+    const skipIds = opts.skipIds || {};
+    if (!controls) return;
+    Object.keys(controls).forEach((id) => {
+      if (skipIds[id]) return;
+      const el = document.getElementById(id);
+      if (!el) return;
+      const val = controls[id];
+      if (el.type === "checkbox") {
+        const on = !!val;
+        if (el.checked !== on) {
+          el.checked = on;
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      } else {
+        el.value = val;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+  }
+
+  function collectLocalPrefs() {
+    const prefs = {};
+    SETTINGS_LS_KEYS.forEach((k) => {
+      try {
+        const v = localStorage.getItem(k);
+        if (v != null) prefs[k] = v;
+      } catch (_) {}
+    });
+    return prefs;
+  }
+
+  function buildSettingsSnapshot() {
+    return {
+      format: "dst-settings",
+      version: 1,
+      app: "Device Stress Tester",
+      build: typeof BUILD_ID !== "undefined" ? BUILD_ID : null,
+      exportedAt: new Date().toISOString(),
+      controls: collectControlState(),
+      localPrefs: collectLocalPrefs(),
+    };
+  }
+
+  function setSettingsBackupStatus(msg, kind) {
+    const el = document.getElementById("settingsBackupStatus");
+    if (!el) return;
+    el.textContent = msg;
+    el.className = "status" + (kind ? " " + kind : "");
+  }
+
+  function exportSettingsDst() {
+    const snap = buildSettingsSnapshot();
+    // .dst is JSON with a friendly extension
+    const text = JSON.stringify(snap, null, 2);
+    const blob = new Blob([text], { type: "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "device-stress-settings-" + Date.now() + ".dst";
+    a.click();
+    URL.revokeObjectURL(url);
+    setSettingsBackupStatus(
+      "Exported settings → .dst (" + Object.keys(snap.controls).length + " controls)",
+      "on"
+    );
+  }
+
+  function stopAllStressorsQuiet() {
+    try {
+      if (typeof stopHeavyLoads === "function") stopHeavyLoads();
+    } catch (_) {}
+    document.querySelectorAll('input[type="checkbox"]').forEach((el) => {
+      if (!el.id) return;
+      // leave theme-related alone — handled separately
+      if (el.id === "memProtectToggle") return;
+      if (el.checked) {
+        el.checked = false;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+  }
+
+  function resetSettingsToDefaults() {
+    const ok = window.confirm(
+      "Reset all settings to defaults?\n\n" +
+        "• Stops active tests\n" +
+        "• Clears local prefs (theme, stealth tab, keep-alive, memory guard)\n" +
+        "• Clears saved best score on this device\n" +
+        "• Does NOT delete the online leaderboard\n\n" +
+        "This cannot be undone (export a .dst first if you want a backup)."
+    );
+    if (!ok) {
+      setSettingsBackupStatus("Reset cancelled", "");
+      return;
+    }
+    const ok2 = window.confirm("Really reset? Last chance.");
+    if (!ok2) {
+      setSettingsBackupStatus("Reset cancelled", "");
+      return;
+    }
+
+    stopAllStressorsQuiet();
+
+    SETTINGS_LS_KEYS.forEach((k) => {
+      try {
+        localStorage.removeItem(k);
+      } catch (_) {}
+    });
+    try {
+      localStorage.removeItem("dst-leaderboard-v1");
+    } catch (_) {}
+    try {
+      sessionStorage.removeItem("dst-view-hit");
+    } catch (_) {}
+
+    bestScoreRecord = null;
+    peakDpsSession = 0;
+    sustainedSamples = [];
+
+    // Defaults for common controls
+    const defaults = {
+      goalFpsSlider: "15",
+      cpuWorkersSlider: "4",
+      ramMaxSlider: "80",
+      modemStreamsSlider: "6",
+      audioDspCount: "64",
+      downloadDuration: "0",
+      freqSlider: "440",
+      volSlider: "30",
+      multiTabSlider: "3",
+      gpuMode: "webgl",
+      stealthLayout: "blank",
+      stealthTitle: "Documentation",
+      memProtectToggle: true,
+    };
+    Object.keys(defaults).forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (el.type === "checkbox") {
+        el.checked = !!defaults[id];
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      } else {
+        el.value = String(defaults[id]);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+
+    // Theme / PC mode defaults (dark, auto pc)
+    document.documentElement.classList.remove("light");
+    document.documentElement.classList.remove("pc-mode");
+    const themeBtn = document.getElementById("themeToggle");
+    if (themeBtn) themeBtn.textContent = "Light";
+    const pcBtn = document.getElementById("pcModeToggle");
+    if (pcBtn) pcBtn.textContent = "PC";
+
+    memProtectEnabled = true;
+    memGpuStoppedByGuard = false;
+    const memT = document.getElementById("memProtectToggle");
+    if (memT) memT.checked = true;
+
+    try {
+      history.replaceState(null, "", location.pathname + location.search);
+    } catch (_) {}
+
+    updateAbsoluteScoreUI();
+    updateMemoryStatus();
+    setSettingsBackupStatus("Settings reset to defaults", "on");
+    setSaveStatus("Settings reset", "on");
+  }
+
+  async function importSettingsDstFile(file) {
+    const text = await file.text();
+    let snap;
+    try {
+      snap = JSON.parse(text);
+    } catch (_) {
+      setSettingsBackupStatus("Import failed — not valid JSON/.dst", "warn");
+      return;
+    }
+    if (!snap || (snap.format && snap.format !== "dst-settings") && !snap.controls) {
+      setSettingsBackupStatus("Import failed — unrecognized .dst format", "warn");
+      return;
+    }
+    const ok = window.confirm(
+      "Import settings from this .dst file?\n\nCurrent toggles/sliders will be overwritten."
+    );
+    if (!ok) {
+      setSettingsBackupStatus("Import cancelled", "");
+      return;
+    }
+
+    if (snap.localPrefs) {
+      Object.keys(snap.localPrefs).forEach((k) => {
+        try {
+          localStorage.setItem(k, snap.localPrefs[k]);
+        } catch (_) {}
+      });
+      try {
+        bestScoreRecord = JSON.parse(
+          localStorage.getItem("dst-best-score-v1") || "null"
+        );
+      } catch (_) {
+        bestScoreRecord = null;
+      }
+      try {
+        memProtectEnabled = localStorage.getItem("dst-mem-protect") !== "0";
+        const memT = document.getElementById("memProtectToggle");
+        if (memT) memT.checked = memProtectEnabled;
+      } catch (_) {}
+      try {
+        if (localStorage.getItem("pst-theme") === "light") {
+          document.documentElement.classList.add("light");
+          const themeBtn = document.getElementById("themeToggle");
+          if (themeBtn) themeBtn.textContent = "Dark";
+        }
+      } catch (_) {}
+    }
+
+    // Apply non-toggle ranges first, then toggles (avoid starting GPU before goal set)
+    if (snap.controls) {
+      const toggles = {};
+      const others = {};
+      Object.keys(snap.controls).forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && el.type === "checkbox") toggles[id] = snap.controls[id];
+        else others[id] = snap.controls[id];
+      });
+      applyControlState(others);
+      setTimeout(() => applyControlState(toggles), 100);
+    }
+
+    setSettingsBackupStatus(
+      "Imported settings from " + (file.name || ".dst"),
+      "on"
+    );
+  }
+
+  document.getElementById("exportSettingsBtn")?.addEventListener("click", () => {
+    exportSettingsDst();
+  });
+  document.getElementById("resetSettingsBtn")?.addEventListener("click", () => {
+    resetSettingsToDefaults();
+  });
+  document.getElementById("importSettingsBtn")?.addEventListener("click", () => {
+    document.getElementById("importSettingsFile")?.click();
+  });
+  document.getElementById("importSettingsFile")?.addEventListener("change", (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (file) importSettingsDstFile(file);
+  });
+
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "42";
+  const BUILD_ID = "44";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
