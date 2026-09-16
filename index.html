@@ -39,7 +39,7 @@
     html.boot-stealth.boot-stealth-docs::after { background: #fafafa; }
     html.boot-stealth.boot-stealth-terminal::after { background: #0c0c0c; }
   </style>
-  <link rel="stylesheet" href="styles.css?v=44" />
+  <link rel="stylesheet" href="styles.css?v=46" />
 </head>
 <body>
   <div class="app">
@@ -50,7 +50,7 @@
         <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
         <button type="button" id="stealthToggle" class="theme-btn" aria-label="Toggle stealth mode">Stealth</button>
       </div>
-      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v44</span> · <span id="viewCounter" class="view-counter" title="Total page views">views …</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v46</span> · <span id="viewCounter" class="view-counter" title="Total page views">views …</span></p>
     </header>
 
     <!-- Absolute device score -->
@@ -167,6 +167,27 @@
           <input type="range" id="multiTabSlider" min="1" max="10" value="3" step="1" />
         </label>
         <button type="button" class="export-btn" id="multiTabOpen">Open tabs</button>
+      </div>
+
+      <div class="sync-box" id="multiWindowSync" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+        <h3 style="margin:0 0 8px;font-size:1rem">Multi-window sync</h3>
+        <p class="hint" style="margin-top:0">Uses <code>BroadcastChannel</code> so every open DST tab starts/stops the same stress together — stress-tests the OS compositor and window manager.</p>
+        <p class="status" id="syncStatus">Sync idle · 1 local tab</p>
+        <div class="export-row" style="margin-top:8px">
+          <button type="button" class="export-btn" id="syncPingBtn">Ping tabs</button>
+          <button type="button" class="export-btn" id="syncStartBtn">Sync start (Benchmark)</button>
+          <button type="button" class="export-btn" id="syncStopBtn">Sync stop all</button>
+        </div>
+        <label style="display:block;margin-top:10px">
+          Sync profile
+          <select id="syncProfile">
+            <option value="benchmark">Benchmark</option>
+            <option value="endurance">Thermal Endurance</option>
+            <option value="torture">Torture</option>
+            <option value="max">MAX</option>
+            <option value="quick">Quick Burst</option>
+          </select>
+        </label>
       </div>
       <div id="spawnBar" class="spawn-bar" hidden>
         <p id="spawnBarText">Browser blocked extra tabs.</p>
@@ -640,6 +661,29 @@
       <p class="hint">Concurrent fetches + WebSocket ping-pong when possible. Stresses Wi‑Fi/cellular radio, latency, and antenna-area heat.</p>
     </section>
 
+
+    <!-- WebCodecs video encode/decode -->
+    <section class="card">
+      <div class="card-header">
+        <h2>WebCodecs video stress</h2>
+        <label class="switch">
+          <input type="checkbox" id="codecsToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <label>
+        Resolution
+        <select id="codecsResolution">
+          <option value="1280x720">1280×720</option>
+          <option value="1920x1080" selected>1920×1080</option>
+          <option value="2560x1440">2560×1440</option>
+          <option value="3840x2160">3840×2160</option>
+        </select>
+      </label>
+      <p class="status" id="codecsStatus">Off</p>
+      <p class="hint">Hardware-accelerated VideoEncoder + VideoDecoder loop (NVENC/VCN/QuickSync-class blocks when the browser routes to HW). Not covered by normal canvas/WebGL tests. Chrome/Edge best.</p>
+    </section>
+
     <!-- WebGPU compute -->
     <section class="card">
       <div class="card-header">
@@ -823,6 +867,6 @@ $ _</pre>
   </div>
 
   <script src="config.js"></script>
-  <script src="app.js?v=44"></script>
+  <script src="app.js?v=46"></script>
 </body>
 </html>
