@@ -39,7 +39,7 @@
     html.boot-stealth.boot-stealth-docs::after { background: #fafafa; }
     html.boot-stealth.boot-stealth-terminal::after { background: #0c0c0c; }
   </style>
-  <link rel="stylesheet" href="styles.css?v=42" />
+  <link rel="stylesheet" href="styles.css?v=44" />
 </head>
 <body>
   <div class="app">
@@ -50,7 +50,7 @@
         <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
         <button type="button" id="stealthToggle" class="theme-btn" aria-label="Toggle stealth mode">Stealth</button>
       </div>
-      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v42</span> · <span id="viewCounter" class="view-counter" title="Total page views">views …</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v44</span> · <span id="viewCounter" class="view-counter" title="Total page views">views …</span></p>
     </header>
 
     <!-- Absolute device score -->
@@ -75,6 +75,26 @@
       </div>
       <p class="status" id="absScoreStatus" style="margin-top:8px">Tracking DPS every 0.5s · local auto-save on new best</p>
       <p class="status" id="absSaveStatus" style="margin-top:4px">Save: waiting…</p>
+      <div class="card-header" style="margin-top:10px">
+        <span>Auto-stop GPU at 98% JS heap</span>
+        <label class="switch">
+          <input type="checkbox" id="memProtectToggle" checked />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="status" id="memStatus" style="margin-top:6px">Memory: —</p>
+    </section>
+
+    <section class="card card-span-all" id="settingsCard">
+      <h2>Settings backup</h2>
+      <div class="export-row">
+        <button type="button" class="export-btn" id="exportSettingsBtn">Export settings (.dst)</button>
+        <button type="button" class="export-btn" id="importSettingsBtn">Import .dst</button>
+        <button type="button" class="export-btn" id="resetSettingsBtn" style="border-color:var(--danger);color:var(--danger)">Reset settings</button>
+      </div>
+      <input type="file" id="importSettingsFile" accept=".dst,application/json,.json" hidden />
+      <p class="status" id="settingsBackupStatus" style="margin-top:8px">Export toggles, sliders, theme &amp; local prefs as a .dst file</p>
+      <p class="hint">.dst is a settings snapshot for this site. Reset asks for confirmation and restores defaults (does not wipe the online leaderboard).</p>
     </section>
 
     <!-- Stealth / keep-alive controls -->
@@ -803,6 +823,6 @@ $ _</pre>
   </div>
 
   <script src="config.js"></script>
-  <script src="app.js?v=42"></script>
+  <script src="app.js?v=44"></script>
 </body>
 </html>
