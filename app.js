@@ -924,6 +924,7 @@
     speedWindowStart = downloadStart;
     active.download = true;
     updatePower();
+    ensureLiveChartSampling();
 
     const endAt = durationSec > 0 ? downloadStart + durationSec * 1000 : Infinity;
 
@@ -1047,27 +1048,111 @@
   });
 
   // ---------- Network upload stress ----------
-  // Possible via POST of large bodies. Public echo APIs accept limited sizes;
-  // we stream many medium chunks for sustained uplink measurement.
+  // Public echo servers often mirror the body back — that stalls measured uplink.
+  // Use XHR upload progress + abort response body ASAP for faster cycles.
   const UPLOAD_URLS = [
+    "https://httpbingo.org/post",
     "https://httpbin.org/post",
     "https://postman-echo.com/post",
-    "https://httpbingo.org/post",
   ];
   let uploadAbort = null;
   let uploadBytes = 0;
   let uploadStart = 0;
   let uploadSpeedWindowBytes = 0;
   let uploadSpeedWindowStart = 0;
+  let uploadXhrs = [];
 
   function makeUploadChunk(size) {
     const buf = new Uint8Array(size);
-    // Patterned data (not all zeros — some stacks compress zeros)
-    for (let i = 0; i < size; i += 4096) {
-      buf[i] = (i ^ (i >> 8)) & 0xff;
-      if (i + 1 < size) buf[i + 1] = (performance.now() * 17) & 0xff;
+    const seed = (Math.random() * 255) | 0;
+    for (let i = 0; i < size; i += 1024) {
+      buf[i] = (i + seed) & 0xff;
+      if (i + 16 < size) buf[i + 16] = (i >> 8) & 0xff;
     }
     return buf;
+  }
+
+  function xhrUploadOnce(url, body, signal) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      uploadXhrs.push(xhr);
+      let lastLoaded = 0;
+      xhr.open("POST", url, true);
+      xhr.timeout = 120000;
+      xhr.responseType = "text";
+      try {
+        xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      } catch (_) {}
+
+      const onAbort = () => {
+        try {
+          xhr.abort();
+        } catch (_) {}
+        reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      };
+      if (signal) {
+        if (signal.aborted) return onAbort();
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      xhr.upload.onprogress = (ev) => {
+        if (!ev.lengthComputable) return;
+        const delta = ev.loaded - lastLoaded;
+        if (delta > 0) {
+          lastLoaded = ev.loaded;
+          uploadBytes += delta;
+          uploadSpeedWindowBytes += delta;
+          const now = performance.now();
+          const elapsedSec = (now - uploadStart) / 1000;
+          const windowSec = (now - uploadSpeedWindowStart) / 1000;
+          if (windowSec >= 1.0) {
+            uploadSpeedWindowBytes = delta;
+            uploadSpeedWindowStart = now;
+          }
+          const avg = elapsedSec > 0.05 ? uploadBytes / elapsedSec : 0;
+          const inst =
+            windowSec > 0.05 ? uploadSpeedWindowBytes / windowSec : avg;
+          metrics.uploadMbps = (inst * 8) / 1e6;
+          metrics.networkMbps = Math.max(
+            metrics.networkMbps || 0,
+            metrics.uploadMbps
+          );
+          const status = document.getElementById("uploadStatus");
+          if (status) {
+            status.textContent =
+              "Uploading… " +
+              formatMB(uploadBytes) +
+              " MB · " +
+              formatMbPerSec(inst) +
+              " Mb/s · " +
+              elapsedSec.toFixed(0) +
+              "s";
+            status.className = "status on";
+          }
+        }
+      };
+
+      xhr.onload = () => {
+        // Prefer progress totals; if no progress events, count full body
+        if (lastLoaded === 0) {
+          uploadBytes += body.byteLength;
+          uploadSpeedWindowBytes += body.byteLength;
+        }
+        resolve(xhr.status);
+      };
+      xhr.onerror = () => reject(new Error("xhr network error"));
+      xhr.ontimeout = () => reject(new Error("xhr timeout"));
+      xhr.onabort = () =>
+        reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+
+      try {
+        xhr.send(body);
+      } catch (err) {
+        reject(err);
+      }
+    }).finally(() => {
+      uploadXhrs = uploadXhrs.filter((x) => x.readyState !== 4 && x.readyState !== 0);
+    });
   }
 
   async function runUploadLoop(durationSec) {
@@ -1077,40 +1162,20 @@
     uploadStart = performance.now();
     uploadSpeedWindowBytes = 0;
     uploadSpeedWindowStart = uploadStart;
+    uploadXhrs = [];
     active.upload = true;
     updatePower();
+    ensureLiveChartSampling();
 
     const endAt = durationSec > 0 ? uploadStart + durationSec * 1000 : Infinity;
+    // Default 2 MB — smaller chunks finish faster on echo servers
     const chunkMB = Math.max(
       1,
-      Math.min(32, parseInt(document.getElementById("uploadChunkMB")?.value, 10) || 4)
+      Math.min(16, parseInt(document.getElementById("uploadChunkMB")?.value, 10) || 2)
     );
     const chunkSize = chunkMB * 1024 * 1024;
-    const CONCURRENCY = 3;
+    const CONCURRENCY = 6;
     let urlIndex = 0;
-
-    const updateStatus = () => {
-      const now = performance.now();
-      const elapsedSec = (now - uploadStart) / 1000;
-      const windowSec = (now - uploadSpeedWindowStart) / 1000;
-      if (windowSec >= 1.5) {
-        uploadSpeedWindowBytes = 0;
-        uploadSpeedWindowStart = now;
-      }
-      const avg = elapsedSec > 0.05 ? uploadBytes / elapsedSec : 0;
-      const inst = windowSec > 0.05 ? uploadSpeedWindowBytes / windowSec : avg;
-      metrics.uploadMbps = (inst * 8) / 1e6;
-      metrics.networkMbps = Math.max(metrics.networkMbps || 0, metrics.uploadMbps);
-      status.textContent =
-        "Uploading… " +
-        formatMB(uploadBytes) +
-        " MB · " +
-        formatMbPerSec(inst) +
-        " Mb/s · " +
-        elapsedSec.toFixed(0) +
-        "s";
-      status.className = "status on";
-    };
 
     async function oneUpload() {
       while (performance.now() < endAt && !uploadAbort.signal.aborted) {
@@ -1123,37 +1188,20 @@
           Math.random();
         urlIndex++;
         try {
-          const res = await fetch(url, {
-            method: "POST",
-            body: body,
-            signal: uploadAbort.signal,
-            cache: "no-store",
-            mode: "cors",
-            headers: {
-              "Content-Type": "application/octet-stream",
-            },
-          });
-          // Count bytes we attempted to send (upload volume)
-          uploadBytes += body.byteLength;
-          uploadSpeedWindowBytes += body.byteLength;
-          updateStatus();
-          if (!res.ok) {
-            // still counted as uplink attempt
-            await res.arrayBuffer().catch(() => null);
-          }
+          await xhrUploadOnce(url, body, uploadAbort.signal);
         } catch (err) {
-          if (err.name === "AbortError") return;
-          // Fallback: same-origin blob "upload" via fetch POST to blob URL won't work.
-          // Use FormData to a data URL isn't valid. Local churn still stresses CPU/memory;
-          // for radio we retry next endpoint.
-          uploadBytes += body.byteLength * 0; // don't fake uplink on total failure
-          // brief local POST to about:blank-equivalent — skip
-          updateStatus();
+          if (err && err.name === "AbortError") return;
+          // brief backoff then try next host
+          await new Promise((r) => setTimeout(r, 40));
         }
       }
     }
 
     try {
+      if (status) {
+        status.textContent = "Uploading… starting " + CONCURRENCY + " streams";
+        status.className = "status on";
+      }
       await Promise.all(Array.from({ length: CONCURRENCY }, () => oneUpload()));
     } finally {
       active.upload = false;
@@ -1162,28 +1210,43 @@
       const elapsedSec = (performance.now() - uploadStart) / 1000;
       const avgSpeed =
         elapsedSec > 0 ? formatMbPerSec(uploadBytes / elapsedSec) : "0.0";
-      status.textContent =
-        "Stopped — " +
-        formatMB(uploadBytes) +
-        " MB · avg " +
-        avgSpeed +
-        " Mb/s · " +
-        elapsedSec.toFixed(0) +
-        "s";
-      status.className = "status";
+      if (status) {
+        status.textContent =
+          "Stopped — " +
+          formatMB(uploadBytes) +
+          " MB · avg " +
+          avgSpeed +
+          " Mb/s · " +
+          elapsedSec.toFixed(0) +
+          "s";
+        status.className = "status";
+      }
       const tog = document.getElementById("uploadToggle");
       if (tog) tog.checked = false;
       uploadAbort = null;
+      uploadXhrs.forEach((x) => {
+        try {
+          x.abort();
+        } catch (_) {}
+      });
+      uploadXhrs = [];
     }
   }
 
   function stopUpload() {
     if (uploadAbort) uploadAbort.abort();
+    uploadXhrs.forEach((x) => {
+      try {
+        x.abort();
+      } catch (_) {}
+    });
+    uploadXhrs = [];
   }
 
   document.getElementById("uploadToggle")?.addEventListener("change", (e) => {
     if (e.target.checked) {
-      const dur = parseInt(document.getElementById("uploadDuration")?.value, 10) || 0;
+      const dur =
+        parseInt(document.getElementById("uploadDuration")?.value, 10) || 0;
       runUploadLoop(dur);
     } else {
       stopUpload();
@@ -4685,41 +4748,37 @@
   function drawPerfChart(canvas, samples, key, color, yLabel) {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    const dpr = window.devicePixelRatio || 1;
-    const cssW = canvas.clientWidth || 320;
+    if (!ctx) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // Prefer layout width; fall back so charts still draw before layout settles
+    let cssW = canvas.clientWidth || canvas.parentElement?.clientWidth || 0;
+    if (cssW < 40) cssW = Math.min(640, (window.innerWidth || 360) - 32);
     const cssH = 160;
-    canvas.width = Math.floor(cssW * dpr);
-    canvas.height = Math.floor(cssH * dpr);
+    canvas.style.width = "100%";
+    canvas.style.height = cssH + "px";
+    canvas.width = Math.max(1, Math.floor(cssW * dpr));
+    canvas.height = Math.max(1, Math.floor(cssH * dpr));
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const w = cssW;
     const h = cssH;
-    const pad = { l: 44, r: 10, t: 12, b: 24 };
-    ctx.clearRect(0, 0, w, h);
-    const bg = getComputedStyle(document.documentElement).getPropertyValue("--input-bg").trim() || "#1a1a22";
-    const border = getComputedStyle(document.documentElement).getPropertyValue("--border").trim() || "#333";
-    const muted = getComputedStyle(document.documentElement).getPropertyValue("--muted").trim() || "#888";
+    const pad = { l: 48, r: 10, t: 14, b: 24 };
+    const bg =
+      getComputedStyle(document.documentElement).getPropertyValue("--input-bg").trim() ||
+      "#1a1a22";
+    const border =
+      getComputedStyle(document.documentElement).getPropertyValue("--border").trim() ||
+      "#333";
+    const muted =
+      getComputedStyle(document.documentElement).getPropertyValue("--muted").trim() ||
+      "#888";
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, w, h);
 
     const pts = (samples || [])
-      .map((s) => ({ t: s.t, v: s[key] }))
+      .map((s) => ({ t: s.t != null ? s.t : 0, v: Number(s[key]) }))
       .filter((p) => p.v != null && isFinite(p.v));
-    if (pts.length < 2) {
-      ctx.fillStyle = muted;
-      ctx.font = "12px sans-serif";
-      ctx.fillText("Waiting for samples…", pad.l, h / 2);
-      return;
-    }
-    const t0 = pts[0].t;
-    const t1 = pts[pts.length - 1].t;
-    let vmin = Math.min(...pts.map((p) => p.v));
-    let vmax = Math.max(...pts.map((p) => p.v));
-    if (vmax <= vmin) vmax = vmin + 1;
-    const span = vmax - vmin;
-    vmin -= span * 0.05;
-    vmax += span * 0.05;
 
-    // grid
+    // grid always
     ctx.strokeStyle = border;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -4730,55 +4789,136 @@
     }
     ctx.stroke();
 
+    if (pts.length < 1) {
+      ctx.fillStyle = muted;
+      ctx.font = "12px sans-serif";
+      ctx.fillText("Waiting for samples…", pad.l, h / 2);
+      ctx.fillText(yLabel || "", pad.l, 10);
+      return;
+    }
+
+    // single point → duplicate so a line/dot is visible
+    if (pts.length === 1) {
+      pts.push({ t: pts[0].t + 1, v: pts[0].v });
+    }
+
+    const t0 = pts[0].t;
+    const t1 = pts[pts.length - 1].t;
+    let vmin = Math.min(...pts.map((p) => p.v));
+    let vmax = Math.max(...pts.map((p) => p.v));
+    if (vmax <= vmin) {
+      vmin = Math.max(0, vmin - 1);
+      vmax = vmax + 1;
+    }
+    const span = vmax - vmin;
+    vmin -= span * 0.08;
+    vmax += span * 0.08;
+    if (vmin < 0 && Math.min(...pts.map((p) => p.v)) >= 0) vmin = 0;
+
     ctx.fillStyle = muted;
     ctx.font = "10px sans-serif";
     for (let i = 0; i <= 4; i++) {
       const y = pad.t + ((h - pad.t - pad.b) * i) / 4;
       const val = vmax - ((vmax - vmin) * i) / 4;
-      let label = val >= 1e6 ? (val / 1e6).toFixed(1) + "M" : val >= 1e3 ? (val / 1e3).toFixed(1) + "k" : val.toFixed(1);
+      let label =
+        Math.abs(val) >= 1e6
+          ? (val / 1e6).toFixed(1) + "M"
+          : Math.abs(val) >= 1e3
+            ? (val / 1e3).toFixed(1) + "k"
+            : val.toFixed(val >= 10 ? 0 : 1);
       ctx.fillText(label, 4, y + 3);
     }
     ctx.fillText(yLabel || "", pad.l, 10);
     ctx.fillText(t0.toFixed(0) + "s", pad.l, h - 6);
-    ctx.fillText(t1.toFixed(0) + "s", w - pad.r - 24, h - 6);
+    ctx.fillText(t1.toFixed(0) + "s", w - pad.r - 28, h - 6);
 
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    // fill under line
     ctx.beginPath();
     pts.forEach((p, i) => {
-      const x = pad.l + ((p.t - t0) / Math.max(0.001, t1 - t0)) * (w - pad.l - pad.r);
-      const y = pad.t + (1 - (p.v - vmin) / (vmax - vmin)) * (h - pad.t - pad.b);
+      const x =
+        pad.l +
+        ((p.t - t0) / Math.max(0.001, t1 - t0)) * (w - pad.l - pad.r);
+      const y =
+        pad.t + (1 - (p.v - vmin) / (vmax - vmin)) * (h - pad.t - pad.b);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
+    const lastX =
+      pad.l +
+      ((pts[pts.length - 1].t - t0) / Math.max(0.001, t1 - t0)) *
+        (w - pad.l - pad.r);
+    const firstX = pad.l;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
     ctx.stroke();
+    ctx.lineTo(lastX, h - pad.b);
+    ctx.lineTo(firstX, h - pad.b);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.12;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+
+  // Live chart ring buffer — runs even without a named profile
+  let liveChartSamples = [];
+  let liveChartTimer = null;
+  let liveChartStart = 0;
+  const LIVE_CHART_MAX = 180; // ~3 min @ 1s
+
+  function ensureLiveChartSampling() {
+    if (liveChartTimer) return;
+    liveChartStart = performance.now();
+    liveChartTimer = setInterval(() => {
+      const t = (performance.now() - liveChartStart) / 1000;
+      liveChartSamples.push({
+        t,
+        cpuOpsPerSec: metrics.cpuOpsPerSec || 0,
+        gpuFps: metrics.gpuFps || 0,
+        downloadMbps: metrics.downloadMbps || 0,
+        uploadMbps: metrics.uploadMbps || 0,
+        networkMbps: metrics.networkMbps || 0,
+        storageMBps: metrics.storageMBps || 0,
+        powerIndexW: lastPowerIndexW || 0,
+      });
+      if (liveChartSamples.length > LIVE_CHART_MAX) {
+        liveChartSamples = liveChartSamples.slice(-LIVE_CHART_MAX);
+      }
+      // Prefer profile telemetry when present; else live ring
+      updatePerfCharts();
+    }, 1000);
   }
 
   function updatePerfCharts() {
+    const samples =
+      telemetrySamples && telemetrySamples.length >= 1
+        ? telemetrySamples
+        : liveChartSamples;
     drawPerfChart(
       document.getElementById("cpuChart"),
-      telemetrySamples,
+      samples,
       "cpuOpsPerSec",
       "#5b8cff",
       "CPU"
     );
     drawPerfChart(
       document.getElementById("gpuChart"),
-      telemetrySamples,
+      samples,
       "gpuFps",
       "#34d399",
       "FPS"
     );
     drawPerfChart(
       document.getElementById("netDownChart"),
-      telemetrySamples,
+      samples,
       "downloadMbps",
       "#38bdf8",
       "↓ Mb/s"
     );
     drawPerfChart(
       document.getElementById("netUpChart"),
-      telemetrySamples,
+      samples,
       "uploadMbps",
       "#f472b6",
       "↑ Mb/s"
@@ -7235,8 +7375,12 @@
 
   setTimeout(initMultiWindowSync, 200);
 
+  ensureLiveChartSampling();
+  setTimeout(updatePerfCharts, 400);
+  window.addEventListener("resize", () => updatePerfCharts());
+
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "47";
+  const BUILD_ID = "48";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
