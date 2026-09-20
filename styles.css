@@ -860,7 +860,7 @@ html.stealth-on .app { /* stress UI still runs underneath */ }
 }
 .perf-chart-wrap canvas {
   width: 100%;
-  height: auto;
+  height: 160px;
   display: block;
   border-radius: 10px;
   background: var(--input-bg);
