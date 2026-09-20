@@ -39,7 +39,7 @@
     html.boot-stealth.boot-stealth-docs::after { background: #fafafa; }
     html.boot-stealth.boot-stealth-terminal::after { background: #0c0c0c; }
   </style>
-  <link rel="stylesheet" href="styles.css?v=47" />
+  <link rel="stylesheet" href="styles.css?v=48" />
 </head>
 <body>
   <div class="app">
@@ -50,7 +50,7 @@
         <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
         <button type="button" id="stealthToggle" class="theme-btn" aria-label="Toggle stealth mode">Stealth</button>
       </div>
-      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v47</span> · <span id="viewCounter" class="view-counter" title="Total page views">views …</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v48</span> · <span id="viewCounter" class="view-counter" title="Total page views">views …</span></p>
     </header>
 
     <!-- Absolute device score -->
@@ -425,11 +425,11 @@
         </label>
         <label>
           Chunk size (MB)
-          <input type="number" id="uploadChunkMB" value="4" min="1" max="32" step="1" />
+          <input type="number" id="uploadChunkMB" value="2" min="1" max="32" step="1" />
         </label>
       </div>
       <p class="status" id="uploadStatus">Idle — 0 MB · 0.0 Mb/s</p>
-      <p class="hint">POSTs large binary blobs to public echo endpoints (httpbin / postman-echo). Measures real uplink when CORS allows; otherwise falls back to same-origin blob churn. Possible, but limited by the remote accepting POSTs.</p>
+      <p class="hint">POSTs binary chunks via XHR (upload progress). Echo servers are slow if they mirror the body — we measure progress on the wire and use 6 streams. For higher Mb/s try smaller chunks (1–2 MB) on a strong link.</p>
     </section>
 
     <!-- GPU / Fractals -->
@@ -899,6 +899,6 @@ $ _</pre>
   </div>
 
   <script src="config.js"></script>
-  <script src="app.js?v=47"></script>
+  <script src="app.js?v=48"></script>
 </body>
 </html>
