@@ -39,7 +39,7 @@
     html.boot-stealth.boot-stealth-docs::after { background: #fafafa; }
     html.boot-stealth.boot-stealth-terminal::after { background: #0c0c0c; }
   </style>
-  <link rel="stylesheet" href="styles.css?v=46" />
+  <link rel="stylesheet" href="styles.css?v=47" />
 </head>
 <body>
   <div class="app">
@@ -50,7 +50,7 @@
         <button type="button" id="pcModeToggle" class="theme-btn" aria-label="Toggle PC multi-column layout">PC</button>
         <button type="button" id="stealthToggle" class="theme-btn" aria-label="Toggle stealth mode">Stealth</button>
       </div>
-      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v46</span> · <span id="viewCounter" class="view-counter" title="Total page views">views …</span></p>
+      <p class="subtitle">Browser hardware stress lab · phones &amp; PCs <span id="buildTag" class="build-tag">v47</span> · <span id="viewCounter" class="view-counter" title="Total page views">views …</span></p>
     </header>
 
     <!-- Absolute device score -->
@@ -216,6 +216,14 @@
         <div class="perf-chart-wrap">
           <h3>GPU FPS</h3>
           <canvas id="gpuChart" width="640" height="180"></canvas>
+        </div>
+        <div class="perf-chart-wrap">
+          <h3>Download Mb/s</h3>
+          <canvas id="netDownChart" width="640" height="180"></canvas>
+        </div>
+        <div class="perf-chart-wrap">
+          <h3>Upload Mb/s</h3>
+          <canvas id="netUpChart" width="640" height="180"></canvas>
         </div>
       </div>
       <div class="export-row">
@@ -397,7 +405,31 @@
         </label>
       </div>
       <p class="status" id="downloadStatus">Idle — 0 MB · 0.0 Mb/s</p>
-      <p class="hint">Repeatedly fetches large remote files to keep the radio active.</p>
+      <p class="hint">Repeatedly fetches large remote files to keep the radio active. Speed feeds the Download chart.</p>
+    </section>
+
+    <!-- Network upload stress -->
+    <section class="card">
+      <div class="card-header">
+        <h2>Network Upload Stress</h2>
+        <label class="switch">
+          <input type="checkbox" id="uploadToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="controls">
+        <label>
+          Duration (seconds)
+          <input type="number" id="uploadDuration" value="0" min="0" step="1" />
+          <span class="hint-inline">0 = infinite</span>
+        </label>
+        <label>
+          Chunk size (MB)
+          <input type="number" id="uploadChunkMB" value="4" min="1" max="32" step="1" />
+        </label>
+      </div>
+      <p class="status" id="uploadStatus">Idle — 0 MB · 0.0 Mb/s</p>
+      <p class="hint">POSTs large binary blobs to public echo endpoints (httpbin / postman-echo). Measures real uplink when CORS allows; otherwise falls back to same-origin blob churn. Possible, but limited by the remote accepting POSTs.</p>
     </section>
 
     <!-- GPU / Fractals -->
@@ -867,6 +899,6 @@ $ _</pre>
   </div>
 
   <script src="config.js"></script>
-  <script src="app.js?v=46"></script>
+  <script src="app.js?v=47"></script>
 </body>
 </html>
