@@ -12,6 +12,7 @@
     location: 1.0,   // GNSS
     cpu: 4.5,        // all-core busy — high (scaled by workers)
     download: 1.5,   // radio
+    upload: 1.6,     // radio uplink
     gpu: 4.2,        // shader load — high
     mic: 0.45,       // audio in
     tone: 0.7,       // audio DSP / speaker — low-medium
@@ -42,6 +43,7 @@
     location: false,
     cpu: false,
     download: false,
+    upload: false,
     gpu: false,
     mic: false,
     tone: false,
@@ -71,6 +73,8 @@
     storageOpsPerSec: 0,
     storageMBps: 0,
     networkMbps: 0,
+    downloadMbps: 0,
+    uploadMbps: 0,
     modemLatencyMs: 0,
   };
 
@@ -936,7 +940,10 @@
 
       const avgBytesPerSec = elapsedSec > 0.05 ? downloadBytes / elapsedSec : 0;
       const instBytesPerSec = windowSec > 0.05 ? speedWindowBytes / windowSec : avgBytesPerSec;
-      const speed = formatMbPerSec(instBytesPerSec || avgBytesPerSec);
+      const inst = instBytesPerSec || avgBytesPerSec;
+      const speed = formatMbPerSec(inst);
+      metrics.downloadMbps = (inst * 8) / 1e6;
+      metrics.networkMbps = Math.max(metrics.networkMbps || 0, metrics.downloadMbps);
 
       status.textContent =
         `Downloading… ${formatMB(downloadBytes)} MB · ${speed} Mb/s · ${elapsedSec.toFixed(0)}s`;
@@ -1007,6 +1014,7 @@
       );
     } finally {
       active.download = false;
+      metrics.downloadMbps = 0;
       updatePower();
       const elapsedSec = (performance.now() - downloadStart) / 1000;
       const avgSpeed = elapsedSec > 0 ? formatMbPerSec(downloadBytes / elapsedSec) : "0.0";
@@ -1034,6 +1042,151 @@
       runDownloadLoop(dur);
     } else {
       stopDownload();
+    stopUpload();
+    }
+  });
+
+  // ---------- Network upload stress ----------
+  // Possible via POST of large bodies. Public echo APIs accept limited sizes;
+  // we stream many medium chunks for sustained uplink measurement.
+  const UPLOAD_URLS = [
+    "https://httpbin.org/post",
+    "https://postman-echo.com/post",
+    "https://httpbingo.org/post",
+  ];
+  let uploadAbort = null;
+  let uploadBytes = 0;
+  let uploadStart = 0;
+  let uploadSpeedWindowBytes = 0;
+  let uploadSpeedWindowStart = 0;
+
+  function makeUploadChunk(size) {
+    const buf = new Uint8Array(size);
+    // Patterned data (not all zeros — some stacks compress zeros)
+    for (let i = 0; i < size; i += 4096) {
+      buf[i] = (i ^ (i >> 8)) & 0xff;
+      if (i + 1 < size) buf[i + 1] = (performance.now() * 17) & 0xff;
+    }
+    return buf;
+  }
+
+  async function runUploadLoop(durationSec) {
+    const status = document.getElementById("uploadStatus");
+    uploadAbort = new AbortController();
+    uploadBytes = 0;
+    uploadStart = performance.now();
+    uploadSpeedWindowBytes = 0;
+    uploadSpeedWindowStart = uploadStart;
+    active.upload = true;
+    updatePower();
+
+    const endAt = durationSec > 0 ? uploadStart + durationSec * 1000 : Infinity;
+    const chunkMB = Math.max(
+      1,
+      Math.min(32, parseInt(document.getElementById("uploadChunkMB")?.value, 10) || 4)
+    );
+    const chunkSize = chunkMB * 1024 * 1024;
+    const CONCURRENCY = 3;
+    let urlIndex = 0;
+
+    const updateStatus = () => {
+      const now = performance.now();
+      const elapsedSec = (now - uploadStart) / 1000;
+      const windowSec = (now - uploadSpeedWindowStart) / 1000;
+      if (windowSec >= 1.5) {
+        uploadSpeedWindowBytes = 0;
+        uploadSpeedWindowStart = now;
+      }
+      const avg = elapsedSec > 0.05 ? uploadBytes / elapsedSec : 0;
+      const inst = windowSec > 0.05 ? uploadSpeedWindowBytes / windowSec : avg;
+      metrics.uploadMbps = (inst * 8) / 1e6;
+      metrics.networkMbps = Math.max(metrics.networkMbps || 0, metrics.uploadMbps);
+      status.textContent =
+        "Uploading… " +
+        formatMB(uploadBytes) +
+        " MB · " +
+        formatMbPerSec(inst) +
+        " Mb/s · " +
+        elapsedSec.toFixed(0) +
+        "s";
+      status.className = "status on";
+    };
+
+    async function oneUpload() {
+      while (performance.now() < endAt && !uploadAbort.signal.aborted) {
+        const body = makeUploadChunk(chunkSize);
+        const url =
+          UPLOAD_URLS[urlIndex % UPLOAD_URLS.length] +
+          "?t=" +
+          Date.now() +
+          "&r=" +
+          Math.random();
+        urlIndex++;
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            body: body,
+            signal: uploadAbort.signal,
+            cache: "no-store",
+            mode: "cors",
+            headers: {
+              "Content-Type": "application/octet-stream",
+            },
+          });
+          // Count bytes we attempted to send (upload volume)
+          uploadBytes += body.byteLength;
+          uploadSpeedWindowBytes += body.byteLength;
+          updateStatus();
+          if (!res.ok) {
+            // still counted as uplink attempt
+            await res.arrayBuffer().catch(() => null);
+          }
+        } catch (err) {
+          if (err.name === "AbortError") return;
+          // Fallback: same-origin blob "upload" via fetch POST to blob URL won't work.
+          // Use FormData to a data URL isn't valid. Local churn still stresses CPU/memory;
+          // for radio we retry next endpoint.
+          uploadBytes += body.byteLength * 0; // don't fake uplink on total failure
+          // brief local POST to about:blank-equivalent — skip
+          updateStatus();
+        }
+      }
+    }
+
+    try {
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => oneUpload()));
+    } finally {
+      active.upload = false;
+      metrics.uploadMbps = 0;
+      updatePower();
+      const elapsedSec = (performance.now() - uploadStart) / 1000;
+      const avgSpeed =
+        elapsedSec > 0 ? formatMbPerSec(uploadBytes / elapsedSec) : "0.0";
+      status.textContent =
+        "Stopped — " +
+        formatMB(uploadBytes) +
+        " MB · avg " +
+        avgSpeed +
+        " Mb/s · " +
+        elapsedSec.toFixed(0) +
+        "s";
+      status.className = "status";
+      const tog = document.getElementById("uploadToggle");
+      if (tog) tog.checked = false;
+      uploadAbort = null;
+    }
+  }
+
+  function stopUpload() {
+    if (uploadAbort) uploadAbort.abort();
+  }
+
+  document.getElementById("uploadToggle")?.addEventListener("change", (e) => {
+    if (e.target.checked) {
+      const dur = parseInt(document.getElementById("uploadDuration")?.value, 10) || 0;
+      runUploadLoop(dur);
+    } else {
+      stopUpload();
     }
   });
 
@@ -4357,6 +4510,8 @@
         storageOpsPerSec: metrics.storageOpsPerSec,
         storageMBps: metrics.storageMBps,
         networkMbps: metrics.networkMbps,
+        downloadMbps: metrics.downloadMbps,
+        uploadMbps: metrics.uploadMbps,
         modemLatencyMs: metrics.modemLatencyMs,
         score,
         powerIndexW: lastPowerIndexW,
@@ -4614,6 +4769,20 @@
       "#34d399",
       "FPS"
     );
+    drawPerfChart(
+      document.getElementById("netDownChart"),
+      telemetrySamples,
+      "downloadMbps",
+      "#38bdf8",
+      "↓ Mb/s"
+    );
+    drawPerfChart(
+      document.getElementById("netUpChart"),
+      telemetrySamples,
+      "uploadMbps",
+      "#f472b6",
+      "↑ Mb/s"
+    );
     if (!document.getElementById("scorecardCard")?.hidden) {
       drawPerfChart(
         document.getElementById("cpuChartCard"),
@@ -4859,6 +5028,7 @@
     setToggle("storageToggle", false);
     setToggle("modemToggle", false);
     setToggle("downloadToggle", false);
+    setToggle("uploadToggle", false);
     setToggle("cameraToggle", false);
     setToggle("vibrateToggle", false);
     setToggle("locationToggle", false);
@@ -5038,6 +5208,7 @@
         setToggle("locationToggle", true);
         setToggle("cpuToggle", true);
         setToggle("downloadToggle", true);
+        setToggle("uploadToggle", true);
         setToggle("modemToggle", true);
         setToggle("storageToggle", true);
         setToggle("ramToggle", true);
@@ -5291,6 +5462,9 @@
     { p: "f_cpu", id: "cpuToggle", kind: "toggle" },
     { p: "f_cpuw", id: "cpuWorkersSlider", kind: "range", label: "cpuWorkersValue" },
     { p: "f_dl", id: "downloadToggle", kind: "toggle" },
+    { p: "f_ul", id: "uploadToggle", kind: "toggle" },
+    { p: "f_ul_dur", id: "uploadDuration", kind: "number" },
+    { p: "f_ul_mb", id: "uploadChunkMB", kind: "number" },
     { p: "f_dld", id: "downloadDuration", kind: "number" },
     { p: "f_gpu", id: "gpuToggle", kind: "toggle" },
     { p: "f_gpum", id: "gpuMode", kind: "select" },
@@ -5333,7 +5507,7 @@
     "cpuWorkersSlider", "goalFpsSlider", "ramMaxSlider", "modemStreamsSlider",
     "audioDspCount", "freqSlider", "volSlider", "downloadDuration",
     "ispFilter", "gpuMode", "panelPattern", "storagePattern",
-    "cpuToggle", "downloadToggle", "modemToggle", "storageToggle", "ramToggle",
+    "cpuToggle", "downloadToggle", "uploadToggle", "modemToggle", "storageToggle", "ramToggle",
     "cameraToggle", "vibrateToggle", "locationToggle", "sensorsToggle",
     "nfcToggle", "vrrToggle", "wasmToggle", "zeroGcToggle", "audioDspToggle",
     "keepAliveToggle", "stealthTabToggle", "blurCloseToggle",
@@ -7062,7 +7236,7 @@
   setTimeout(initMultiWindowSync, 200);
 
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "46";
+  const BUILD_ID = "47";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
