@@ -836,8 +836,15 @@
           <span class="slider"></span>
         </label>
       </div>
+      <div class="card-header" style="margin-top:8px">
+        <span>HDR white video (max brightness)</span>
+        <label class="switch">
+          <input type="checkbox" id="voidHdrToggle" checked />
+          <span class="slider"></span>
+        </label>
+      </div>
       <p class="status" id="voidStatus">Off</p>
-      <p class="hint">Full-screen blank (black in dark mode, white in light). Remaining taps shown on screen. Tap 5× to close tab. ✕ exits mode only. Counter resets after 3s idle.</p>
+      <p class="hint">Full-screen blank (black in dark mode, white in light). With HDR white on, plays a looping peak-white HDR10 video instead to push HDR displays to max brightness (SDR displays just show white). Remaining taps shown on screen. Tap 5× to close tab. ✕ exits mode only. Counter resets after 3s idle.</p>
     </section>
 
     <footer class="card-span-all">
@@ -848,6 +855,7 @@
 
   <!-- Full-screen overlay for Eclipse Void -->
   <div id="voidOverlay" class="void-overlay" hidden>
+    <video id="voidHdrVideo" class="void-hdr-video" src="media/void-hdr-white.mp4" muted loop playsinline preload="none" disablepictureinpicture disableremoteplayback aria-hidden="true" hidden></video>
     <button type="button" id="voidCloseBtn" class="void-close" aria-label="Exit Eclipse Void">×</button>
     <p id="voidTapHint" class="void-tap-hint">5 taps left to close tab</p>
   </div>

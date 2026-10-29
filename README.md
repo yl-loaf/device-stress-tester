@@ -96,7 +96,7 @@ URL automation (examples):
 |---------|-------------|
 | **Panel burn-in / flicker** | Full-screen RGB cycle, white/black flash, grid, spectrum |
 | **HDR / peak brightness** | Full-screen peak white (+ HDR canvas when supported) |
-| **Eclipse Void** | Blank black/white screen; 5 taps to close tab; ✕ exits mode |
+| **Eclipse Void** | Blank black/white screen; 5 taps to close tab; ✕ exits mode. Optional (default on) looping peak-white HDR10 video (`media/void-hdr-white.mp4`, HEVC Main10 PQ) drives HDR panels to max brightness |
 | **Tone generator** | Single oscillator with frequency & volume |
 | **Audio DSP load** | Dozens–hundreds of oscillators through filters/delays |
 
@@ -132,5 +132,6 @@ Power figures are **models and estimates**. Browsers cannot read true instantane
 - `index.html` — UI structure
 - `styles.css` — layout, themes, PC grid
 - `app.js` — all feature logic
+- `media/void-hdr-white.mp4` — 3 KB peak-white HDR10 loop for Eclipse Void
 
 MIT — free to use and modify.
