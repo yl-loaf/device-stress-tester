@@ -32,6 +32,7 @@
     ai: 4.8,
     zeroGc: 1.5,
     hdr: 2.5,
+    voidHdr: 2.5,    // Eclipse Void HDR white video — same full-panel peak as hdr
     audioDsp: 1.8,
     codecs: 3.5, // HW video encode/decode blocks
   };
@@ -63,6 +64,7 @@
     ai: false,
     zeroGc: false,
     hdr: false,
+    voidHdr: false,
     audioDsp: false,
     codecs: false,
   };
@@ -6475,6 +6477,7 @@
   let voidTapCount = 0;
   let voidTapResetTimer = null;
   let voidActive = false;
+  let voidHdrNote = ""; // status suffix while HDR white is showing
 
   function tryCloseTab() {
     try {
@@ -6501,8 +6504,36 @@
     }
     if (status && voidActive) {
       status.textContent =
-        "Active — " + left + " tap" + (left === 1 ? "" : "s") + " left · ✕ exits mode";
+        "Active" + voidHdrNote + " — " + left + " tap" + (left === 1 ? "" : "s") + " left · ✕ exits mode";
       status.className = "status on";
+    }
+  }
+
+  // Peak-white HDR10 (PQ) video over the void → HDR panels drive to max brightness
+  function setVoidHdr(on) {
+    const overlay = document.getElementById("voidOverlay");
+    const video = document.getElementById("voidHdrVideo");
+    if (!overlay || !video) return;
+    overlay.classList.toggle("hdr", on);
+    video.hidden = !on;
+    active.voidHdr = on;
+    updatePower();
+    if (!on) {
+      video.pause();
+      voidHdrNote = "";
+      return;
+    }
+    const hdrDisplay =
+      window.matchMedia && window.matchMedia("(dynamic-range: high)").matches;
+    voidHdrNote = hdrDisplay ? " · HDR peak white" : " · white (SDR display)";
+    video.muted = true;
+    const p = video.play();
+    if (p && p.catch) {
+      p.catch(() => {
+        if (!active.voidHdr) return;
+        voidHdrNote = " · white (HDR video blocked/unsupported)";
+        updateVoidTapUI();
+      });
     }
   }
 
@@ -6522,8 +6553,10 @@
     if (on) {
       overlay.hidden = false;
       document.body.style.overflow = "hidden";
+      setVoidHdr(!!document.getElementById("voidHdrToggle")?.checked);
       updateVoidTapUI();
     } else {
+      setVoidHdr(false);
       overlay.hidden = true;
       document.body.style.overflow = "";
       if (toggle) toggle.checked = false;
@@ -6572,6 +6605,22 @@
 
   const voidOverlayEl = document.getElementById("voidOverlay");
   voidOverlayEl.addEventListener("pointerup", onVoidTap);
+
+  document.getElementById("voidHdrToggle").addEventListener("change", (e) => {
+    try {
+      localStorage.setItem("dst-void-hdr", e.target.checked ? "1" : "0");
+    } catch (_) {}
+    if (voidActive) {
+      setVoidHdr(e.target.checked);
+      updateVoidTapUI();
+    }
+  });
+
+  try {
+    if (localStorage.getItem("dst-void-hdr") === "0") {
+      document.getElementById("voidHdrToggle").checked = false;
+    }
+  } catch (_) {}
 
   // ---------- Close tab when page loses focus ----------
   document.getElementById("blurCloseToggle").addEventListener("change", (e) => {
@@ -6950,6 +6999,7 @@
     "pst-stealth-tab",
     "pst-keep-alive",
     "dst-mem-protect",
+    "dst-void-hdr",
     "dst-best-score-v1",
   ];
 
@@ -7043,6 +7093,7 @@
       if (!el.id) return;
       // leave theme-related alone — handled separately
       if (el.id === "memProtectToggle") return;
+      if (el.id === "voidHdrToggle") return; // preference, not a stressor
       if (el.checked) {
         el.checked = false;
         el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -7102,6 +7153,7 @@
       stealthLayout: "blank",
       stealthTitle: "Documentation",
       memProtectToggle: true,
+      voidHdrToggle: true,
     };
     Object.keys(defaults).forEach((id) => {
       const el = document.getElementById(id);
