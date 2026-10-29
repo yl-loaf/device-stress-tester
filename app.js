@@ -7432,7 +7432,7 @@
   window.addEventListener("resize", () => updatePerfCharts());
 
   // Bump BUILD_ID whenever you push a new version to GitHub Pages.
-  const BUILD_ID = "48";
+  const BUILD_ID = "49";
   const CHECK_EVERY_MS = 45_000;
 
   async function checkForUpdate() {
